@@ -1,6 +1,7 @@
 # FX & Hedging
 
 ![CI](https://github.com/ai-crypto-onramp/fx-hedging/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/ai-crypto-onramp/fx-hedging/branch/main/graph/badge.svg)](https://codecov.io/gh/ai-crypto-onramp/fx-hedging)
 
 Manages currency exposure across daily flows, executes hedges, and tracks slippage for the crypto on-ramp.
 
