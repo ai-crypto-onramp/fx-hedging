@@ -4,4 +4,5 @@ vendor/
 .env
 *.log
 *.test
-/fx-hedgingcoverage.out
+coverage.out
+/fx-hedging
