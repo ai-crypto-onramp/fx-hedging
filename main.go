@@ -6,8 +6,19 @@ import (
 )
 
 func main() {
-	http.HandleFunc("/healthz", healthz)
-	_ = http.ListenAndServe(":8080", nil)
+	_ = run(":8080")
+}
+
+// run starts the HTTP server on the given address and blocks until it exits.
+func run(addr string) error {
+	return http.ListenAndServe(addr, newMux())
+}
+
+// newMux builds the service's HTTP routing table.
+func newMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", healthz)
+	return mux
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {
