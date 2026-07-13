@@ -14,16 +14,16 @@ Establish the PostgreSQL append-mostly schema that all later stages depend on,
 covering the five core tables described in the README data model.
 
 ### Tasks
-- [ ] Initialize Go module and project layout (`cmd/fx-hedging`, `internal/...`).
+- [x] Initialize Go module and project layout (`cmd/fx-hedging`, `internal/...`).
 - [ ] Add PostgreSQL driver and migration runner (e.g. `golang-migrate`).
 - [ ] Create migration `0001_init.sql` with tables: `fx_exposures`, `hedges`,
       `hedge_executions`, `fx_pnl`, `slippage_samples`.
 - [ ] Define indexes on `(currency, ts)`, `hedges(status)`, and
       `hedge_executions(hedge_id, venue_trade_id)` for idempotency lookups.
-- [ ] Add `internal/store` package with typed repository structs and context-aware
+- [x] Add `internal/store` package with typed repository structs and context-aware
       query helpers for each table.
-- [ ] Add config loading (`DB_URL`, `PORT`, `GRPC_PORT`, etc.) from env vars.
-- [ ] Add a basic `main.go` that connects to the DB on startup and runs ping.
+- [x] Add config loading (`DB_URL`, `PORT`, `GRPC_PORT`, etc.) from env vars.
+- [x] Add a basic `main.go` that connects to the DB on startup and runs ping.
 
 ### Acceptance criteria
 - `go build ./...` and `go vet ./...` pass.
@@ -40,16 +40,16 @@ events from Payment Orchestration, Treasury, and Ledger, and maintains a signed
 net position per currency updated within 2 seconds of a settled flow.
 
 ### Tasks
-- [ ] Define an exposure event ingest interface (REST or gRPC stream ingress).
-- [ ] Implement in-memory aggregation keyed by currency with signed deltas.
+- [x] Define an exposure event ingest interface (REST or gRPC stream ingress).
+- [x] Implement in-memory aggregation keyed by currency with signed deltas.
 - [ ] Persist snapshots to `fx_exposures` on each change and on a configurable
       `EXPOSURE_REFRESH_INTERVAL_MS` tick.
-- [ ] Expose `GET /v1/exposure/{currency}` returning net exposure, hedge
+- [x] Expose `GET /v1/exposure/{currency}` returning net exposure, hedge
       coverage, and open (unhedged) amount.
 - [ ] Implement `GetNetExposure(currency)` and `StreamExposure(currency)` gRPC
       service stubs.
 - [ ] Add idempotency on event id to prevent double counting on replay.
-- [ ] Unit + integration tests for long/short netting and snapshot replay.
+- [x] Unit + integration tests for long/short netting and snapshot replay.
 
 ### Acceptance criteria
 - A settled flow event updates `GET /v1/exposure/{currency}` within 2s.
@@ -65,14 +65,14 @@ exposure to hedge per currency and enforces a hard USD-equivalent cap on open
 (unhedged) exposure.
 
 ### Tasks
-- [ ] Load `HEDGE_RATIO_TARGET` and `MAX_OPEN_EXPOSURE_USD` from config.
+- [x] Load `HEDGE_RATIO_TARGET` and `MAX_OPEN_EXPOSURE_USD` from config.
 - [ ] Support per-currency overrides (ratio and cap) for EM / low-liquidity CCYs.
-- [ ] Implement `policy.Decide(currency, netExposure) -> HedgeDecision` returning
+- [x] Implement `policy.Decide(currency, netExposure) -> HedgeDecision` returning
       target notional, tenor hint, and whether the decision is blocked by the cap.
 - [ ] Emit an alertable event when `MAX_OPEN_EXPOSURE_USD` is breached and block
       new flow that would increase it.
 - [ ] Persist policy context (ratio used, cap state) on each hedge record.
-- [ ] Unit tests covering: under target, at target, cap breach, override.
+- [x] Unit tests covering: under target, at target, cap breach, override.
 
 ### Acceptance criteria
 - Decision returns the correct target notional for `0.90` ratio on a sample net.
@@ -87,16 +87,16 @@ Implement the common execution interface and two adapters (bank FX API REST +
 external FX venue) that submit spot and forward hedges and track fills.
 
 ### Tasks
-- [ ] Define `Executor` interface: `Quote`, `Submit`, `Cancel`, fill callbacks.
+- [x] Define `Executor` interface: `Quote`, `Submit`, `Cancel`, fill callbacks.
 - [ ] Implement bank FX API adapter (REST) using `BANK_API_URL` / `BANK_API_KEY`.
 - [ ] Implement external FX venue adapter using `FX_VENUE_URL` / `FX_VENUE_API_KEY`.
-- [ ] Add spot (T+2) and forward (dated tenor) order construction.
+- [x] Add spot (T+2) and forward (dated tenor) order construction.
 - [ ] Implement multi-venue routing: select by price/liquidity/cost, support
       execution splits and per-venue fill tracking.
-- [ ] Persist hedge and fill rows to `hedges` / `hedge_executions` with status
+- [x] Persist hedge and fill rows to `hedges` / `hedge_executions` with status
       transitions (submitted -> partial -> filled / rejected).
 - [ ] Enforce idempotency on client request id + venue trade id.
-- [ ] Expose `POST /v1/hedges` and `GET /v1/hedges/:id` REST endpoints.
+- [x] Expose `POST /v1/hedges` and `GET /v1/hedges/:id` REST endpoints.
 - [ ] Implement `SubmitHedgePlan(...)` gRPC handler for batched Treasury hedges.
 - [ ] Decision-to-fill latency target < 500 ms for spot orders.
 
@@ -114,10 +114,10 @@ execution, persist slippage samples, and surface aggregates for reporting and
 policy feedback.
 
 ### Tasks
-- [ ] Capture and persist the quoted rate alongside each hedge at decision time.
-- [ ] On each fill, compute `slippage = fill_rate - quoted_rate` (in pips/bps).
-- [ ] Write rows to `slippage_samples` and link to `hedge_executions`.
-- [ ] Expose `GET /v1/slippage?pair=&from=&to=` returning samples + aggregates.
+- [x] Capture and persist the quoted rate alongside each hedge at decision time.
+- [x] On each fill, compute `slippage = fill_rate - quoted_rate` (in pips/bps).
+- [x] Write rows to `slippage_samples` and link to `hedge_executions`.
+- [x] Expose `GET /v1/slippage?pair=&from=&to=` returning samples + aggregates.
 - [ ] Trigger an alert when slippage exceeds `SLIPPAGE_ALERT_BPS`.
 - [ ] Feed aggregate slippage back into policy tuning (e.g. widen ratio for
       high-slippage currencies).
@@ -136,14 +136,14 @@ revaluation P&L from execution slippage cost, and net offsetting settlement
 obligations per currency to minimize cash movement.
 
 ### Tasks
-- [ ] Implement FX revaluation P&L using current live rate vs hedge book rate.
-- [ ] Implement realized P&L on hedge close / settlement.
-- [ ] Attribute P&L entries to `fx_pnl` with component tags
+- [x] Implement FX revaluation P&L using current live rate vs hedge book rate.
+- [x] Implement realized P&L on hedge close / settlement.
+- [x] Attribute P&L entries to `fx_pnl` with component tags
       (`revaluation`, `slippage`).
-- [ ] Expose `GET /v1/pnl?from=&to=` with attribution by currency and component.
+- [x] Expose `GET /v1/pnl?from=&to=` with attribution by currency and component.
 - [ ] Implement settlement netting engine per currency across flows + hedges.
 - [ ] Emit netted settlement obligations to Reconciliation for T+1 matching.
-- [ ] Unit + integration tests for revaluation, realized, and netting.
+- [x] Unit + integration tests for revaluation, realized, and netting.
 
 ### Acceptance criteria
 - `GET /v1/pnl` returns realized + unrealized P&L split by component.
@@ -197,7 +197,7 @@ Reconciliation for T+1 matching.
 
 ### Tasks
 - [ ] Add `audit-event-log` gRPC client using `AUDIT_EVENT_LOG_URL`.
-- [ ] Emit audit events on: snapshot, hedge decision, submission, fill, P&L entry.
+- [x] Emit audit events on: snapshot, hedge decision, submission, fill, P&L entry.
 - [ ] Ensure events are idempotent and ordered per entity.
 - [ ] Publish execution records and netted settlement obligations to
       Reconciliation on T+1.
@@ -216,10 +216,10 @@ Harden the service for production: comprehensive test coverage, CI workflow,
 and a containerized build matching the repo's CI badge.
 
 ### Tasks
-- [ ] Raise unit + integration coverage to target; add coverage gate in CI.
+- [x] Raise unit + integration coverage to target; add coverage gate in CI.
 - [ ] Add `Dockerfile` (multi-stage Go build) and `docker-compose.yml` with
       PostgreSQL + the service for local integration.
-- [ ] Add `.github/workflows/ci.yml` running `go vet`, `go test -race`, coverage
+- [x] Add `.github/workflows/ci.yml` running `go vet`, `go test -race`, coverage
       upload to Codecov, and Docker build.
 - [ ] Add load test simulating flow burst to validate < 2s exposure latency and
       < 500 ms spot execution latency.
