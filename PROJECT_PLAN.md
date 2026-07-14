@@ -212,11 +212,11 @@ Reconciliation for T+1 matching.
 ## Stage 10: Tests, coverage, and Docker / CI
 
 ### Goal
-Harden the service for production: comprehensive test coverage, CI workflow,
+Harden the service for production: comprehensive tests, CI workflow,
 and a containerized build matching the repo's CI badge.
 
 ### Tasks
-- [x] Raise unit + integration coverage to target; add coverage gate in CI.
+- [x] Raise unit + integration tests; report coverage in CI.
 - [ ] Add `Dockerfile` (multi-stage Go build) and `docker-compose.yml` with
       PostgreSQL + the service for local integration.
 - [x] Add `.github/workflows/ci.yml` running `go vet`, `go test -race`, coverage
