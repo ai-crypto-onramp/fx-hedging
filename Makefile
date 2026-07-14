@@ -4,13 +4,13 @@ build:
 	go build -o bin/fx-hedging ./cmd/fx-hedging
 
 test:
-	go test ./cmd/... ./internal/... -race -coverprofile=coverage.out -coverpkg=./...
+	go test ./cmd/... ./internal/... -race -coverprofile=coverage.out -coverpkg=./cmd/...,./internal/...
 
 run:
 	go run ./cmd/fx-hedging
 
 lint:
-	go vet ./...
+	golangci-lint run
 
 docker-build:
 	docker build -t ai-crypto-onramp/fx-hedging .
