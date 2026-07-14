@@ -1,4 +1,4 @@
-.PHONY: build test run lint cover docker-build docker-run clean
+.PHONY: build test run lint coverage docker-build docker-run clean
 
 build:
 	go build -o bin/fx-hedging ./cmd/fx-hedging
@@ -12,7 +12,7 @@ run:
 lint:
 	golangci-lint run
 
-cover: test
+coverage: test
 	go tool cover -func=coverage.out | tail -1
 
 docker-build:
