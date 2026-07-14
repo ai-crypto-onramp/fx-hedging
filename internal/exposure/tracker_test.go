@@ -1,8 +1,10 @@
 package exposure
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
@@ -108,5 +110,88 @@ func TestTrackerConcurrent(t *testing.T) {
 	}
 	if got.NetAmount != wantSum {
 		t.Fatalf("net = %v, want %v", got.NetAmount, wantSum)
+	}
+}
+
+func TestAddEventIdempotent(t *testing.T) {
+	tr := New()
+	ev := domain.ExposureEvent{EventID: "e1", Currency: "EUR", Amount: 100_000}
+	if !tr.AddEvent(ev) {
+		t.Fatal("first AddEvent should apply")
+	}
+	if tr.AddEvent(ev) {
+		t.Fatal("duplicate AddEvent should not apply")
+	}
+	got := tr.GetExposure("EUR")
+	if got.NetAmount != 100_000 {
+		t.Fatalf("net = %v, want 100000 (no double count)", got.NetAmount)
+	}
+	if !tr.Seen("e1") {
+		t.Fatal("Seen should report e1")
+	}
+	if tr.Seen("missing") {
+		t.Fatal("Seen should not report missing")
+	}
+}
+
+func TestAddEventEmptyIDAlwaysApplied(t *testing.T) {
+	tr := New()
+	if !tr.AddEvent(domain.ExposureEvent{Currency: "EUR", Amount: 50}) {
+		t.Fatal("empty id should apply")
+	}
+	if !tr.AddEvent(domain.ExposureEvent{Currency: "EUR", Amount: 50}) {
+		t.Fatal("empty id should apply again (no guard)")
+	}
+	if got := tr.GetExposure("EUR"); got.NetAmount != 100 {
+		t.Fatalf("net = %v, want 100", got.NetAmount)
+	}
+}
+
+type captureSink struct {
+	mu   sync.Mutex
+	snaps []*domain.Exposure
+}
+
+func (c *captureSink) AppendExposureSnapshot(e *domain.Exposure) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.snaps = append(c.snaps, e)
+}
+
+func (c *captureSink) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.snaps)
+}
+
+func TestSnapshotterPersistsOnChange(t *testing.T) {
+	tr := New()
+	sink := &captureSink{}
+	snap := NewSnapshotter(tr, sink, 10*time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go snap.Run(ctx)
+
+	tr.AddExposure("EUR", 100_000)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	if sink.count() < 1 {
+		t.Fatalf("expected at least 1 snapshot, got %d", sink.count())
+	}
+}
+
+func TestSnapshotterPersistsOnTick(t *testing.T) {
+	tr := New()
+	sink := &captureSink{}
+	snap := NewSnapshotter(tr, sink, 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go snap.Run(ctx)
+
+	tr.AddExposure("EUR", 100)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if sink.count() < 2 {
+		t.Fatalf("expected at least 2 snapshots (change + tick), got %d", sink.count())
 	}
 }

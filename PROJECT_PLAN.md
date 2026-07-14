@@ -15,10 +15,10 @@ covering the five core tables described in the README data model.
 
 ### Tasks
 - [x] Initialize Go module and project layout (`cmd/fx-hedging`, `internal/...`).
-- [ ] Add PostgreSQL driver and migration runner (e.g. `golang-migrate`).
-- [ ] Create migration `0001_init.sql` with tables: `fx_exposures`, `hedges`,
+- [x] Add PostgreSQL driver and migration runner (e.g. `golang-migrate`).
+- [x] Create migration `0001_init.sql` with tables: `fx_exposures`, `hedges`,
       `hedge_executions`, `fx_pnl`, `slippage_samples`.
-- [ ] Define indexes on `(currency, ts)`, `hedges(status)`, and
+- [x] Define indexes on `(currency, ts)`, `hedges(status)`, and
       `hedge_executions(hedge_id, venue_trade_id)` for idempotency lookups.
 - [x] Add `internal/store` package with typed repository structs and context-aware
       query helpers for each table.
@@ -42,13 +42,13 @@ net position per currency updated within 2 seconds of a settled flow.
 ### Tasks
 - [x] Define an exposure event ingest interface (REST or gRPC stream ingress).
 - [x] Implement in-memory aggregation keyed by currency with signed deltas.
-- [ ] Persist snapshots to `fx_exposures` on each change and on a configurable
+- [x] Persist snapshots to `fx_exposures` on each change and on a configurable
       `EXPOSURE_REFRESH_INTERVAL_MS` tick.
 - [x] Expose `GET /v1/exposure/{currency}` returning net exposure, hedge
       coverage, and open (unhedged) amount.
-- [ ] Implement `GetNetExposure(currency)` and `StreamExposure(currency)` gRPC
+- [x] Implement `GetNetExposure(currency)` and `StreamExposure(currency)` gRPC
       service stubs.
-- [ ] Add idempotency on event id to prevent double counting on replay.
+- [x] Add idempotency on event id to prevent double counting on replay.
 - [x] Unit + integration tests for long/short netting and snapshot replay.
 
 ### Acceptance criteria
@@ -66,12 +66,12 @@ exposure to hedge per currency and enforces a hard USD-equivalent cap on open
 
 ### Tasks
 - [x] Load `HEDGE_RATIO_TARGET` and `MAX_OPEN_EXPOSURE_USD` from config.
-- [ ] Support per-currency overrides (ratio and cap) for EM / low-liquidity CCYs.
+- [x] Support per-currency overrides (ratio and cap) for EM / low-liquidity CCYs.
 - [x] Implement `policy.Decide(currency, netExposure) -> HedgeDecision` returning
       target notional, tenor hint, and whether the decision is blocked by the cap.
-- [ ] Emit an alertable event when `MAX_OPEN_EXPOSURE_USD` is breached and block
+- [x] Emit an alertable event when `MAX_OPEN_EXPOSURE_USD` is breached and block
       new flow that would increase it.
-- [ ] Persist policy context (ratio used, cap state) on each hedge record.
+- [x] Persist policy context (ratio used, cap state) on each hedge record.
 - [x] Unit tests covering: under target, at target, cap breach, override.
 
 ### Acceptance criteria
@@ -88,17 +88,17 @@ external FX venue) that submit spot and forward hedges and track fills.
 
 ### Tasks
 - [x] Define `Executor` interface: `Quote`, `Submit`, `Cancel`, fill callbacks.
-- [ ] Implement bank FX API adapter (REST) using `BANK_API_URL` / `BANK_API_KEY`.
-- [ ] Implement external FX venue adapter using `FX_VENUE_URL` / `FX_VENUE_API_KEY`.
+- [x] Implement bank FX API adapter (REST) using `BANK_API_URL` / `BANK_API_KEY`.
+- [x] Implement external FX venue adapter using `FX_VENUE_URL` / `FX_VENUE_API_KEY`.
 - [x] Add spot (T+2) and forward (dated tenor) order construction.
-- [ ] Implement multi-venue routing: select by price/liquidity/cost, support
+- [x] Implement multi-venue routing: select by price/liquidity/cost, support
       execution splits and per-venue fill tracking.
 - [x] Persist hedge and fill rows to `hedges` / `hedge_executions` with status
       transitions (submitted -> partial -> filled / rejected).
-- [ ] Enforce idempotency on client request id + venue trade id.
+- [x] Enforce idempotency on client request id + venue trade id.
 - [x] Expose `POST /v1/hedges` and `GET /v1/hedges/:id` REST endpoints.
-- [ ] Implement `SubmitHedgePlan(...)` gRPC handler for batched Treasury hedges.
-- [ ] Decision-to-fill latency target < 500 ms for spot orders.
+- [x] Implement `SubmitHedgePlan(...)` gRPC handler for batched Treasury hedges.
+- [x] Decision-to-fill latency target < 500 ms for spot orders.
 
 ### Acceptance criteria
 - A `POST /v1/hedges` spot order is filled end-to-end in < 500 ms in a sandbox.
@@ -118,8 +118,8 @@ policy feedback.
 - [x] On each fill, compute `slippage = fill_rate - quoted_rate` (in pips/bps).
 - [x] Write rows to `slippage_samples` and link to `hedge_executions`.
 - [x] Expose `GET /v1/slippage?pair=&from=&to=` returning samples + aggregates.
-- [ ] Trigger an alert when slippage exceeds `SLIPPAGE_ALERT_BPS`.
-- [ ] Feed aggregate slippage back into policy tuning (e.g. widen ratio for
+- [x] Trigger an alert when slippage exceeds `SLIPPAGE_ALERT_BPS`.
+- [x] Feed aggregate slippage back into policy tuning (e.g. widen ratio for
       high-slippage currencies).
 
 ### Acceptance criteria
@@ -141,8 +141,8 @@ obligations per currency to minimize cash movement.
 - [x] Attribute P&L entries to `fx_pnl` with component tags
       (`revaluation`, `slippage`).
 - [x] Expose `GET /v1/pnl?from=&to=` with attribution by currency and component.
-- [ ] Implement settlement netting engine per currency across flows + hedges.
-- [ ] Emit netted settlement obligations to Reconciliation for T+1 matching.
+- [x] Implement settlement netting engine per currency across flows + hedges.
+- [x] Emit netted settlement obligations to Reconciliation for T+1 matching.
 - [x] Unit + integration tests for revaluation, realized, and netting.
 
 ### Acceptance criteria
@@ -158,11 +158,11 @@ Serve the `GetLiveRate(currency)` gRPC method used by Pricing / Quote to feed
 quote spreads, backed by real-time FX rates sourced from execution venues.
 
 ### Tasks
-- [ ] Implement a rate cache fed by venue quote streams and bank API quotes.
-- [ ] Implement `GetLiveRate(currency)` gRPC handler returning cached + fresh rate.
-- [ ] Add staleness guard: refuse to serve rates older than a configurable TTL.
-- [ ] Cross-check live rate against the rate used for revaluation P&L.
-- [ ] gRPC + unit tests for cache hit, stale, and refresh paths.
+- [x] Implement a rate cache fed by venue quote streams and bank API quotes.
+- [x] Implement `GetLiveRate(currency)` gRPC handler returning cached + fresh rate.
+- [x] Add staleness guard: refuse to serve rates older than a configurable TTL.
+- [x] Cross-check live rate against the rate used for revaluation P&L.
+- [x] gRPC + unit tests for cache hit, stale, and refresh paths.
 
 ### Acceptance criteria
 - `GetLiveRate` returns a rate within TTL of the latest venue quote.
@@ -177,10 +177,10 @@ aggregate exposure and submit batched / forward hedge plans covering the
 T+0 vs T+2/3 float.
 
 ### Tasks
-- [ ] Finalize `GetNetExposure`, `StreamExposure`, `SubmitHedgePlan` gRPC service.
-- [ ] Map Treasury float tenor requests to forward contracts in Stage 4.
-- [ ] Return batched hedge results (per-hedge status, fills, slippage) to Treasury.
-- [ ] Coordinate with policy layer to reject plans that breach the open cap.
+- [x] Finalize `GetNetExposure`, `StreamExposure`, `SubmitHedgePlan` gRPC service.
+- [x] Map Treasury float tenor requests to forward contracts in Stage 4.
+- [x] Return batched hedge results (per-hedge status, fills, slippage) to Treasury.
+- [x] Coordinate with policy layer to reject plans that breach the open cap.
 - [ ] Integration tests with a Treasury Orchestration stub client.
 
 ### Acceptance criteria
@@ -196,13 +196,13 @@ audit-event-log, and feed hedge executions + settlement obligations to
 Reconciliation for T+1 matching.
 
 ### Tasks
-- [ ] Add `audit-event-log` gRPC client using `AUDIT_EVENT_LOG_URL`.
+- [x] Add `audit-event-log` gRPC client using `AUDIT_EVENT_LOG_URL`.
 - [x] Emit audit events on: snapshot, hedge decision, submission, fill, P&L entry.
-- [ ] Ensure events are idempotent and ordered per entity.
-- [ ] Publish execution records and netted settlement obligations to
+- [x] Ensure events are idempotent and ordered per entity.
+- [x] Publish execution records and netted settlement obligations to
       Reconciliation on T+1.
-- [ ] Add retry + dead-letter handling for audit/recon delivery.
-- [ ] Tests verify event payload shape and ordering guarantees.
+- [x] Add retry + dead-letter handling for audit/recon delivery.
+- [x] Tests verify event payload shape and ordering guarantees.
 
 ### Acceptance criteria
 - Every state change produces exactly one audit event (no duplicates on retry).
@@ -217,15 +217,15 @@ and a containerized build matching the repo's CI badge.
 
 ### Tasks
 - [x] Raise unit + integration tests; report coverage in CI.
-- [ ] Add `Dockerfile` (multi-stage Go build) and `docker-compose.yml` with
+- [x] Add `Dockerfile` (multi-stage Go build) and `docker-compose.yml` with
       PostgreSQL + the service for local integration.
 - [x] Add `.github/workflows/ci.yml` running `go vet`, `go test -race`, coverage
       upload to Codecov, and Docker build.
-- [ ] Add load test simulating flow burst to validate < 2s exposure latency and
+- [x] Add load test simulating flow burst to validate < 2s exposure latency and
       < 500 ms spot execution latency.
-- [ ] Add failure-mode tests: venue down (fail safe, no cap breach growth),
+- [x] Add failure-mode tests: venue down (fail safe, no cap breach growth),
       DB outage (replay on recovery), duplicate callbacks.
-- [ ] Update README with any new run instructions.
+- [x] Update README with any new run instructions.
 
 ### Acceptance criteria
 - CI badge green on `main`; coverage reported to Codecov.

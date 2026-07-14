@@ -142,3 +142,46 @@ func TestStoreConcurrent(t *testing.T) {
 		t.Fatalf("fills = %d, want 20", got)
 	}
 }
+
+func TestGetHedgeByClientRequest(t *testing.T) {
+	s := New()
+	s.CreateHedge(&domain.Hedge{ID: "h1", Currency: "EUR", ClientRequestID: "req-1"})
+	if got := s.GetHedgeByClientRequest("req-1"); got == nil || got.ID != "h1" {
+		t.Fatalf("got = %v, want h1", got)
+	}
+	if s.GetHedgeByClientRequest("missing") != nil {
+		t.Fatal("expected nil for missing request id")
+	}
+}
+
+func TestHasFillIdempotency(t *testing.T) {
+	s := New()
+	s.CreateHedge(&domain.Hedge{ID: "h1", Currency: "EUR"})
+	_, _ = s.UpdateHedge("h1", func(h *domain.Hedge) error {
+		h.Fills = append(h.Fills, domain.Fill{HedgeID: "h1", Venue: "bank", VenueTradeID: "vt-1"})
+		return nil
+	})
+	if !s.HasFill("bank", "vt-1") {
+		t.Fatal("expected HasFill true for recorded fill")
+	}
+	if s.HasFill("bank", "other") {
+		t.Fatal("expected HasFill false for unknown trade id")
+	}
+	if s.HasFill("", "vt-1") {
+		t.Fatal("expected HasFill false for empty venue")
+	}
+}
+
+func TestExposureSnapshots(t *testing.T) {
+	s := New()
+	s.AppendExposureSnapshot(&domain.Exposure{Currency: "EUR", NetAmount: 100, UpdatedAt: time.UnixMilli(200)})
+	s.AppendExposureSnapshot(&domain.Exposure{Currency: "JPY", NetAmount: 50, UpdatedAt: time.UnixMilli(100)})
+	s.AppendExposureSnapshot(&domain.Exposure{Currency: "EUR", NetAmount: 200, UpdatedAt: time.UnixMilli(300)})
+	got := s.ExposureSnapshots("EUR")
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].UpdatedAt.UnixMilli() != 200 {
+		t.Fatalf("first not sorted by UpdatedAt: %v", got[0].UpdatedAt)
+	}
+}

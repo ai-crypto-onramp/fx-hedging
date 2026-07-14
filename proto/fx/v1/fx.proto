@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package fx.v1;
+
+option go_package = "github.com/ai-crypto-onramp/fx-hedging/proto/fx/v1;fxpb";
+
+// FX service exposes live FX rates and aggregate exposure / hedge execution
+// consumed by Pricing / Quote and Treasury Orchestration.
+service FX {
+  // GetLiveRate returns the cached live FX rate for a currency (vs USD).
+  rpc GetLiveRate(GetLiveRateRequest) returns (GetLiveRateResponse) {}
+  // GetNetExposure returns the current net exposure for a currency.
+  rpc GetNetExposure(GetNetExposureRequest) returns (GetNetExposureResponse) {}
+  // StreamExposure streams exposure snapshots for a currency until the
+  // client cancels the stream.
+  rpc StreamExposure(StreamExposureRequest) returns (stream ExposureSnapshot) {}
+  // SubmitHedgePlan submits a batched hedge plan from Treasury Orchestration
+  // and returns per-leg results.
+  rpc SubmitHedgePlan(SubmitHedgePlanRequest) returns (SubmitHedgePlanResponse) {}
+}
+
+message GetLiveRateRequest {
+  string currency = 1;
+}
+
+message GetLiveRateResponse {
+  string currency = 1;
+  double rate = 2;
+  int64 ts_unix_nanos = 3;
+  bool stale = 4;
+}
+
+message GetNetExposureRequest {
+  string currency = 1;
+}
+
+message GetNetExposureResponse {
+  string currency = 1;
+  double net_amount = 2;
+  double hedge_coverage = 3;
+  double open_amount = 4;
+  int64 ts_unix_nanos = 5;
+}
+
+message StreamExposureRequest {
+  string currency = 1;
+}
+
+message ExposureSnapshot {
+  string currency = 1;
+  double net_amount = 2;
+  double hedge_coverage = 3;
+  double open_amount = 4;
+  int64 ts_unix_nanos = 5;
+}
+
+message HedgePlanLeg {
+  string currency = 1;
+  double notional = 2;
+  string tenor = 3;
+  string type = 4;
+  string value_date = 5;
+}
+
+message SubmitHedgePlanRequest {
+  string plan_id = 1;
+  repeated HedgePlanLeg legs = 2;
+}
+
+message HedgePlanLegResult {
+  string currency = 1;
+  string hedge_id = 2;
+  string status = 3;
+  double notional = 4;
+  double quoted_rate = 5;
+  double slippage_bps = 6;
+  string error = 7;
+}
+
+message SubmitHedgePlanResponse {
+  string plan_id = 1;
+  repeated HedgePlanLegResult results = 2;
+  bool rejected = 3;
+  string reject_reason = 4;
+}

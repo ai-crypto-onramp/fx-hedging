@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,32 +9,42 @@ import (
 	"time"
 
 	"github.com/ai-crypto-onramp/fx-hedging/internal/audit"
+	"github.com/ai-crypto-onramp/fx-hedging/internal/clients"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/exposure"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/policy"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/provider"
+	"github.com/ai-crypto-onramp/fx-hedging/internal/ratecache"
+	"github.com/ai-crypto-onramp/fx-hedging/internal/settlement"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
 	"github.com/google/uuid"
 )
 
 // Service wires together the store, exposure tracker, FX provider, policy,
-// and audit sink, exposing handler methods.
+// audit sink, rate cache, settlement engine, and downstream clients,
+// exposing handler methods.
 type Service struct {
-	Store    *store.Store
-	Tracker  *exposure.Tracker
-	Provider provider.FXProvider
-	Policy   *policy.Policy
-	Audit    audit.Sink
+	Store      *store.Store
+	Tracker    *exposure.Tracker
+	Provider   provider.FXProvider
+	Policy     *policy.Policy
+	Audit      audit.Sink
+	Cache      *ratecache.Cache
+	Netter     *settlement.Engine
+	AuditC     *clients.AuditClient
+	ReconC     *clients.ReconClient
 }
 
 // NewService returns a Service ready to serve requests.
 func NewService(st *store.Store, tr *exposure.Tracker, p provider.FXProvider, pol *policy.Policy, a audit.Sink) *Service {
 	return &Service{
-		Store:    st,
-		Tracker:  tr,
-		Provider: p,
-		Policy:   pol,
-		Audit:    a,
+		Store:      st,
+		Tracker:    tr,
+		Provider:   p,
+		Policy:     pol,
+		Audit:      a,
+		Cache:      ratecache.New(time.Second),
+		Netter:     settlement.New(),
 	}
 }
 
@@ -56,10 +67,18 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // --- exposure ---
 
 type addExposureReq struct {
-	Amount float64 `json:"amount"`
+	Amount  float64 `json:"amount"`
+	EventID string  `json:"event_id,omitempty"`
+	Source  string  `json:"source,omitempty"`
 }
 
 // AddExposure handles POST /v1/exposure/{currency}.
+//
+// Idempotency: when EventID is supplied, a previously seen id is a no-op
+// and the current exposure is returned unchanged (preventing double
+// counting on replay). When adding the delta would breach the open
+// exposure cap AND increase the open amount, the request is rejected with
+// 409 Conflict and an alertable audit event is emitted.
 func (s *Service) AddExposure(w http.ResponseWriter, r *http.Request) {
 	currency := strings.ToUpper(r.PathValue("currency"))
 	if currency == "" {
@@ -75,15 +94,51 @@ func (s *Service) AddExposure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "amount must be non-zero")
 		return
 	}
-	s.Tracker.AddExposure(currency, req.Amount)
-	if s.Audit != nil {
-		s.Audit.Emit(audit.Event{
-			Type:     audit.EventExposureAdded,
-			Currency: currency,
-			Detail:   "added exposure",
-			At:       time.Now().UTC(),
-		})
+
+	// Idempotency on event id.
+	if req.EventID != "" && s.Tracker.Seen(req.EventID) {
+		writeJSON(w, http.StatusOK, s.Tracker.GetExposure(currency))
+		return
 	}
+
+	// Cap-breach guard: block new flow that would increase the open
+	// exposure beyond the cap.
+	if s.Policy != nil {
+		current := s.Tracker.GetExposure(currency)
+		if current != nil {
+			openBefore := current.NetAmount - current.HedgeCoverage
+			openAfter := openBefore + req.Amount
+			// Only block if this flow would *increase* the absolute open
+			// exposure beyond the cap.
+			if absFloat(openAfter) > s.Policy.EffectiveCap(currency) && absFloat(openAfter) > absFloat(openBefore) {
+				s.emit(audit.Event{
+					Type:     audit.EventCapBreach,
+					Currency: currency,
+					Detail:   "blocked exposure-increasing flow that would breach MAX_OPEN_EXPOSURE_USD",
+					At:       time.Now().UTC(),
+				})
+				writeError(w, http.StatusConflict, "open exposure cap breached; flow blocked")
+				return
+			}
+		}
+	}
+
+	if req.EventID != "" {
+		s.Tracker.AddEvent(domain.ExposureEvent{
+			EventID:  req.EventID,
+			Currency: currency,
+			Amount:   req.Amount,
+			Source:   req.Source,
+		})
+	} else {
+		s.Tracker.AddExposure(currency, req.Amount)
+	}
+	s.emit(audit.Event{
+		Type:     audit.EventExposureAdded,
+		Currency: currency,
+		Detail:   "added exposure",
+		At:       time.Now().UTC(),
+	})
 	exp := s.Tracker.GetExposure(currency)
 	writeJSON(w, http.StatusOK, exp)
 }
@@ -105,13 +160,22 @@ func (s *Service) GetExposure(w http.ResponseWriter, r *http.Request) {
 // --- hedges ---
 
 type createHedgeReq struct {
-	Currency string  `json:"currency"`
-	Notional float64 `json:"notional"`
-	Tenor    string  `json:"tenor"`
-	Type     string  `json:"type"`
+	Currency        string  `json:"currency"`
+	Notional        float64 `json:"notional"`
+	Tenor           string  `json:"tenor"`
+	Type            string  `json:"type"`
+	ClientRequestID string  `json:"client_request_id,omitempty"`
 }
 
 // CreateHedge handles POST /v1/hedges.
+//
+// Idempotency: when ClientRequestID is supplied, a duplicate submission
+// with the same id returns the original hedge unchanged (200 OK). Fill
+// callbacks are idempotent on (venue, venue_trade_id) via Store.HasFill.
+// Policy context (ratio used, cap state) is persisted on the hedge record.
+// On each fill, slippage above SLIPPAGE_ALERT_BPS raises an alert event,
+// the achieved rate feeds the live rate cache, and the P&L entry is
+// persisted. Executed hedges are published to Reconciliation.
 func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 	var req createHedgeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -138,16 +202,41 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Idempotency on client request id: duplicate returns the original.
+	if req.ClientRequestID != "" {
+		if existing := s.Store.GetHedgeByClientRequest(req.ClientRequestID); existing != nil {
+			writeJSON(w, http.StatusOK, existing)
+			return
+		}
+	}
+
 	now := time.Now().UTC()
 	h := &domain.Hedge{
-		ID:        uuid.NewString(),
-		Currency:  currency,
-		Notional:  req.Notional,
-		Tenor:     tenor,
-		Type:      htype,
-		Status:    domain.StatusPending,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:              uuid.NewString(),
+		Currency:        currency,
+		Notional:        req.Notional,
+		Tenor:           tenor,
+		Type:            htype,
+		Status:          domain.StatusPending,
+		ClientRequestID: req.ClientRequestID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	// Persist policy context on the hedge record.
+	if s.Policy != nil {
+		h.PolicyRatio = s.Policy.EffectiveRatio(currency)
+		h.PolicyCapUSD = s.Policy.EffectiveCap(currency)
+		dec := s.Policy.Decide(currency, s.Tracker.GetExposure(currency))
+		h.CapBreached = dec.BlockedByCap
+		if h.CapBreached {
+			s.emit(audit.Event{
+				Type:     audit.EventCapBreach,
+				Currency: currency,
+				HedgeID:  h.ID,
+				Detail:   "hedge created while open exposure exceeds cap",
+				At:       time.Now().UTC(),
+			})
+		}
 	}
 
 	rate, err := s.Provider.Quote(currency, req.Notional, string(tenor))
@@ -155,15 +244,19 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 		h.Status = domain.StatusFailed
 		h.UpdatedAt = time.Now().UTC()
 		s.Store.CreateHedge(h)
-		s.emit(audit.EventHedgeFailed, h, "quote failed: "+err.Error())
+		s.emitHedge(audit.EventHedgeFailed, h, "quote failed: "+err.Error())
 		writeJSON(w, http.StatusBadGateway, h)
 		return
 	}
 	h.QuotedRate = rate
+	// Feed the quoted rate into the live rate cache (decision-time rate).
+	if s.Cache != nil {
+		s.Cache.Update(currency, rate, "quote")
+	}
 	h.Status = domain.StatusExecuting
 	h.UpdatedAt = time.Now().UTC()
 	s.Store.CreateHedge(h)
-	s.emit(audit.EventHedgeCreated, h, "hedge created")
+	s.emitHedge(audit.EventHedgeCreated, h, "hedge created")
 
 	fills, err := s.Provider.Execute(h)
 	if err != nil {
@@ -173,27 +266,13 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		h.Status = domain.StatusFailed
-		s.emit(audit.EventHedgeFailed, h, "execute failed: "+err.Error())
+		s.emitHedge(audit.EventHedgeFailed, h, "execute failed: "+err.Error())
 		writeJSON(w, http.StatusBadGateway, s.Store.GetHedge(h.ID))
 		return
 	}
 
-	// Compute slippage and P&L; record fill + sample.
-	var slippageBPS, pnl float64
-	for _, f := range fills {
-		if h.QuotedRate != 0 {
-			fslip := (f.Price - h.QuotedRate) / h.QuotedRate * 10_000.0
-			slippageBPS = fslip
-			pnl += (h.QuotedRate - f.Price) * f.Amount
-		}
-		s.Store.AddSlippageSample(domain.SlippageSample{
-			Pair:         currency + "USD",
-			QuotedRate:   h.QuotedRate,
-			ExecutedRate: f.Price,
-			SlippageBPS:  slippageBPS,
-			Timestamp:    f.Timestamp,
-		})
-	}
+	// Compute slippage, P&L, samples, cache + recon publish for each fill.
+	slippageBPS, pnl, executedNotional := s.processFills(h, fills)
 
 	_, _ = s.Store.UpdateHedge(h.ID, func(stored *domain.Hedge) error {
 		stored.Status = domain.StatusExecuted
@@ -204,12 +283,88 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
+	// Persist P&L attribution entry.
+	s.Store.AddPnL(domain.PnL{
+		Currency:   currency,
+		Realized:   pnl,
+		Components: domain.PnLComponent{SlippageCost: slippageBPS * req.Notional / 10_000.0, HedgePnL: pnl},
+	})
+	s.emit(audit.Event{
+		Type:     audit.EventPnLEntry,
+		Currency: currency,
+		HedgeID:  h.ID,
+		Detail:   "pnl entry recorded",
+		At:       time.Now().UTC(),
+	})
+
 	// Increase hedge coverage by the executed notional.
-	s.Tracker.AddCoverage(currency, req.Notional)
+	s.Tracker.AddCoverage(currency, executedNotional)
 
 	out := s.Store.GetHedge(h.ID)
-	s.emit(audit.EventHedgeExecuted, out, "hedge executed")
+	s.emitHedge(audit.EventHedgeExecuted, out, "hedge executed")
+
+	// Publish the execution record to Reconciliation.
+	s.publishExecutionToRecon(out)
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// processFills computes per-fill slippage and P&L, records slippage
+// samples (skipping idempotent duplicate fills), emits slippage alerts,
+// feeds achieved rates back into the live rate cache, and returns the
+// aggregate slippage, P&L, and executed notional.
+func (s *Service) processFills(h *domain.Hedge, fills []domain.Fill) (slippageBPS, pnl, executedNotional float64) {
+	for _, f := range fills {
+		if s.Store.HasFill(f.Venue, f.VenueTradeID) {
+			continue
+		}
+		if h.QuotedRate != 0 {
+			fslip := (f.Price - h.QuotedRate) / h.QuotedRate * 10_000.0
+			slippageBPS = fslip
+			pnl += (h.QuotedRate - f.Price) * f.Amount
+		}
+		s.Store.AddSlippageSample(domain.SlippageSample{
+			Pair:         h.Currency + "USD",
+			QuotedRate:   h.QuotedRate,
+			ExecutedRate: f.Price,
+			SlippageBPS:  slippageBPS,
+			Timestamp:    f.Timestamp,
+		})
+		executedNotional += f.Amount
+		if s.Policy != nil && s.Policy.SlippageAlertBPS > 0 && absFloat(slippageBPS) > s.Policy.SlippageAlertBPS {
+			s.emit(audit.Event{
+				Type:     audit.EventSlippageAlert,
+				Currency: h.Currency,
+				HedgeID:  h.ID,
+				Detail:   "slippage exceeded SLIPPAGE_ALERT_BPS",
+				At:       time.Now().UTC(),
+			})
+		}
+		if s.Cache != nil {
+			s.Cache.Update(h.Currency, f.Price, "fill")
+		}
+	}
+	return slippageBPS, pnl, executedNotional
+}
+
+// publishExecutionToRecon publishes per-fill execution records to
+// Reconciliation for T+1 matching.
+func (s *Service) publishExecutionToRecon(out *domain.Hedge) {
+	if s.ReconC == nil || out == nil || len(out.Fills) == 0 {
+		return
+	}
+	for _, f := range out.Fills {
+		_ = s.ReconC.PublishExecution(context.Background(), clients.ExecutionRecord{
+			HedgeID:      out.ID,
+			Currency:     out.Currency,
+			Venue:        f.Venue,
+			VenueTradeID: f.VenueTradeID,
+			Notional:     f.Amount,
+			FillPrice:    f.Price,
+			QuotedPrice:  out.QuotedRate,
+			SlippageBPS:  out.SlippageBPS,
+			ExecutedAt:   f.Timestamp.UTC().Format(time.RFC3339),
+		})
+	}
 }
 
 // GetHedge handles GET /v1/hedges/{id}.
@@ -291,7 +446,9 @@ type slippageResponse struct {
 	Aggregates slippageAggregates      `json:"aggregates"`
 }
 
-// Slippage handles GET /v1/slippage?pair=&from=&to=.
+// Slippage handles GET /v1/slippage?pair=&from=&to=. Aggregate slippage
+// per currency is fed back into the policy layer to widen the hedge ratio
+// for high-slippage currencies (policy tuning).
 func (s *Service) Slippage(w http.ResponseWriter, r *http.Request) {
 	pair := strings.ToUpper(r.URL.Query().Get("pair"))
 	from, to, err := parseRange(r)
@@ -302,22 +459,66 @@ func (s *Service) Slippage(w http.ResponseWriter, r *http.Request) {
 	samples := s.Store.SlippageSamples(pair, from, to)
 	agg := slippageAggregates{Pair: pair, Count: len(samples)}
 	var sum, max float64
+	byCcySum := map[string]float64{}
+	byCcyCount := map[string]int{}
 	for _, sm := range samples {
 		sum += sm.SlippageBPS
 		if sm.SlippageBPS > max {
 			max = sm.SlippageBPS
 		}
+		ccy := strings.TrimSuffix(sm.Pair, "USD")
+		byCcySum[ccy] += sm.SlippageBPS
+		byCcyCount[ccy]++
 	}
 	if agg.Count > 0 {
 		agg.Mean = sum / float64(agg.Count)
 	}
 	agg.Max = max
+	// Feed aggregate slippage back into policy tuning.
+	if s.Policy != nil {
+		for ccy, totalSlip := range byCcySum {
+			if ccy != "" && byCcyCount[ccy] > 0 {
+				s.Policy.ApplySlippageTuning(ccy, totalSlip/float64(byCcyCount[ccy]))
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, slippageResponse{
 		Pair:       pair,
 		From:       from,
 		To:         to,
 		Samples:    samples,
 		Aggregates: agg,
+	})
+}
+
+// --- settlement netting ---
+
+// Settlement handles GET /v1/settlement, returning netted per-currency
+// settlement obligations across current flows and executed hedges, and
+// publishing them to Reconciliation for T+1 matching.
+func (s *Service) Settlement(w http.ResponseWriter, r *http.Request) {
+	flowsPtrs := s.Tracker.AllExposures()
+	flows := make([]domain.Exposure, 0, len(flowsPtrs))
+	for _, e := range flowsPtrs {
+		flows = append(flows, *e)
+	}
+	hedges := s.Store.AllHedges()
+	obs := s.Netter.NetFromFlowsAndHedges(flows, hedges)
+	// Emit + publish netted obligations to Reconciliation.
+	for _, ob := range obs {
+		s.emit(audit.Event{
+			Type:     audit.EventSettlement,
+			Currency: ob.Currency,
+			Detail:   "netted settlement obligation",
+			At:       ob.At,
+		})
+		if s.ReconC != nil {
+			_ = s.ReconC.PublishObligation(context.Background(), ob)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"obligations": obs,
+		"count":       len(obs),
 	})
 }
 
@@ -335,12 +536,34 @@ func (s *Service) Readyz(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers ---
 
-// emit sends an audit event for a hedge state change.
-func (s *Service) emit(t audit.EventType, h *domain.Hedge, detail string) {
-	if s.Audit == nil {
-		return
+// emit sends an audit event. It also forwards to the downstream
+// audit-event-log client when configured, using the hedge id (or currency)
+// as the entity key for per-entity ordering.
+func (s *Service) emit(e audit.Event) {
+	if s.Audit != nil {
+		s.Audit.Emit(e)
 	}
-	s.Audit.Emit(audit.Event{
+	if s.AuditC != nil {
+		entity := e.HedgeID
+		if entity == "" {
+			entity = "ccy:" + e.Currency
+		}
+		eventID := string(e.Type) + ":" + entity + ":" + e.At.UTC().Format(time.RFC3339Nano)
+		payload := clients.AuditPayload{
+			EventType: string(e.Type),
+			Source:    "fx-hedging",
+			HedgeID:   e.HedgeID,
+			Currency:  e.Currency,
+			Detail:    e.Detail,
+			At:        e.At.UTC().Format(time.RFC3339),
+		}
+		_ = s.AuditC.Emit(context.Background(), payload, eventID, entity)
+	}
+}
+
+// emitHedge sends an audit event for a hedge state change.
+func (s *Service) emitHedge(t audit.EventType, h *domain.Hedge, detail string) {
+	s.emit(audit.Event{
 		Type:     t,
 		HedgeID:  h.ID,
 		Currency: h.Currency,
@@ -380,6 +603,13 @@ func inRange(t, from, to time.Time) bool {
 	return true
 }
 
+func absFloat(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // NewMux builds the HTTP routing mux for the service.
 func NewMux(svc *Service) *http.ServeMux {
 	mux := http.NewServeMux()
@@ -391,5 +621,6 @@ func NewMux(svc *Service) *http.ServeMux {
 	mux.HandleFunc("GET /v1/hedges/{id}", svc.GetHedge)
 	mux.HandleFunc("GET /v1/pnl", svc.PnL)
 	mux.HandleFunc("GET /v1/slippage", svc.Slippage)
+	mux.HandleFunc("GET /v1/settlement", svc.Settlement)
 	return mux
 }

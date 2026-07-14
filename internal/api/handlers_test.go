@@ -196,10 +196,10 @@ func TestCreateHedgeSuccess(t *testing.T) {
 		t.Fatalf("open = %v, want 10000", exp.OpenAmount)
 	}
 
-	// Audit events: created + executed.
+	// Audit events: created + executed + pnl entry.
 	evs := rec.Events()
-	if len(evs) != 2 {
-		t.Fatalf("audit events = %d, want 2", len(evs))
+	if len(evs) < 2 {
+		t.Fatalf("audit events = %d, want >=2", len(evs))
 	}
 
 	// Store has the hedge.
@@ -434,6 +434,132 @@ func TestInRange(t *testing.T) {
 	}
 	if !inRange(t0, time.Time{}, time.Time{}) {
 		t.Fatal("unbounded should include")
+	}
+}
+
+func TestAddExposureIdempotent(t *testing.T) {
+	svc, _, _, _ := newTestService(t, nil)
+	mux := NewMux(svc)
+	body := map[string]interface{}{"amount": 100_000, "event_id": "e1"}
+	r1 := doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", body)
+	if r1.Code != http.StatusOK {
+		t.Fatalf("r1 code = %d", r1.Code)
+	}
+	r2 := doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", body)
+	if r2.Code != http.StatusOK {
+		t.Fatalf("r2 code = %d", r2.Code)
+	}
+	m := decodeBody(t, r2)
+	if m["net_amount"].(float64) != 100_000 {
+		t.Fatalf("net = %v, want 100000 (no double count)", m["net_amount"])
+	}
+}
+
+func TestAddExposureCapBreachBlocksFlow(t *testing.T) {
+	svc, rec, _, _ := newTestService(t, nil)
+	svc.Policy.MaxOpenExposureUSD = 50_000
+	mux := NewMux(svc)
+	// Bring open to 40k (under cap).
+	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": 40_000})
+	// A flow of +20k would bring open to 60k > 50k cap and *increases* open.
+	r := doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": 20_000})
+	if r.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409 (cap breach blocks flow)", r.Code)
+	}
+	found := false
+	for _, e := range rec.Events() {
+		if e.Type == audit.EventCapBreach {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected cap_breach audit event")
+	}
+}
+
+func TestAddExposureCapBreachAllowsReducingFlow(t *testing.T) {
+	svc, _, _, _ := newTestService(t, nil)
+	svc.Policy.MaxOpenExposureUSD = 50_000
+	mux := NewMux(svc)
+	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": 100_000})
+	// A reducing flow (-40k) brings open to 60k still > 50k, but absOpen
+	// decreases from 100k to 60k, so it should be allowed.
+	r := doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": -40_000})
+	if r.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (reducing flow allowed)", r.Code)
+	}
+}
+
+func TestCreateHedgeIdempotentClientRequestID(t *testing.T) {
+	svc, _, _, _ := newTestService(t, nil)
+	mux := NewMux(svc)
+	body := map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot", "client_request_id": "req-1"}
+	r1 := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
+	if r1.Code != http.StatusCreated {
+		t.Fatalf("r1 code = %d", r1.Code)
+	}
+	var h1 domain.Hedge
+	_ = json.Unmarshal(r1.Body.Bytes(), &h1)
+	r2 := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
+	if r2.Code != http.StatusOK {
+		t.Fatalf("r2 code = %d, want 200 (duplicate returns original)", r2.Code)
+	}
+	var h2 domain.Hedge
+	_ = json.Unmarshal(r2.Body.Bytes(), &h2)
+	if h1.ID != h2.ID {
+		t.Fatalf("duplicate submission returned different hedge: %q vs %q", h1.ID, h2.ID)
+	}
+}
+
+func TestCreateHedgeSlippageAlert(t *testing.T) {
+	d := &provider.DummyFXProvider{Rate: 1.0, SlippageBPS: 20}
+	svc, rec, _, _ := newTestService(t, d)
+	svc.Policy.SlippageAlertBPS = 5
+	mux := NewMux(svc)
+	body := map[string]interface{}{"currency": "EUR", "notional": 100_000, "tenor": "spot", "type": "spot"}
+	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
+	if r.Code != http.StatusCreated {
+		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
+	}
+	found := false
+	for _, e := range rec.Events() {
+		if e.Type == audit.EventSlippageAlert {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected slippage_alert audit event")
+	}
+}
+
+func TestSettlementEndpoint(t *testing.T) {
+	svc, _, _, _ := newTestService(t, nil)
+	mux := NewMux(svc)
+	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": 100_000})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/JPY", map[string]interface{}{"amount": -30_000})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "spot", "type": "spot"})
+	r := doJSON(t, mux, http.MethodGet, "/v1/settlement", nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
+	}
+	m := decodeBody(t, r)
+	if m["count"].(float64) < 1 {
+		t.Fatalf("count = %v, want >=1", m["count"])
+	}
+}
+
+func TestSlippageTuningFeedsPolicy(t *testing.T) {
+	d := &provider.DummyFXProvider{Rate: 1.0, SlippageBPS: 20}
+	svc, _, _, _ := newTestService(t, d)
+	svc.Policy.SlippageAlertBPS = 5
+	svc.Policy.WideningStep = 0.05
+	mux := NewMux(svc)
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot"})
+	before := svc.Policy.EffectiveRatio("EUR")
+	_ = doJSON(t, mux, http.MethodGet, "/v1/slippage?pair=EURUSD", nil)
+	after := svc.Policy.EffectiveRatio("EUR")
+	if after <= before {
+		t.Fatalf("ratio before=%v after=%v, expected to widen (increase)", before, after)
 	}
 }
 

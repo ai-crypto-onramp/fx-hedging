@@ -177,4 +177,34 @@ go test ./...
 
 # Lint / vet
 go vet ./...
+golangci-lint run
 ```
+
+### Docker Compose (service + PostgreSQL)
+
+```bash
+# Bring up the service + PostgreSQL (applies migrations on startup via
+# the configured DB_URL; run `make migrate-up` once against the DB):
+docker compose up -d --build
+# Health check:
+curl http://localhost:8080/healthz
+# Tear down:
+docker compose down
+```
+
+### Database migrations
+
+```bash
+# Apply all pending migrations (reads DB_URL):
+make migrate-up
+
+# Revert all applied migrations in reverse order:
+make migrate-down
+```
+
+### gRPC
+
+The service listens on `GRPC_PORT` (default `9090`) for internal gRPC
+calls from Pricing / Quote (`GetLiveRate`) and Treasury Orchestration
+(`GetNetExposure`, `StreamExposure`, `SubmitHedgePlan`). Set `MTLS_CA_CERT`
+to require mTLS; otherwise the server runs without TLS for local dev.
