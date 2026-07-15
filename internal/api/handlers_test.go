@@ -635,3 +635,53 @@ func TestIntegrationServer(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+func TestListHedges(t *testing.T) {
+	svc, _, st, _ := newTestService(t, nil)
+	st.CreateHedge(&domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Tenor: domain.TenorSpot, Type: domain.TypeSpot, Status: domain.StatusPending, CreatedAt: time.Now()})
+	st.CreateHedge(&domain.Hedge{ID: "h2", Currency: "JPY", Notional: 50, Tenor: domain.TenorSpot, Type: domain.TypeSpot, Status: domain.StatusExecuted, CreatedAt: time.Now()})
+	mux := NewMux(svc)
+
+	rec := doJSON(t, mux, http.MethodGet, "/v1/hedges", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	var out struct {
+		Hedges []*domain.Hedge `json:"hedges"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if len(out.Hedges) != 2 {
+		t.Fatalf("hedges=%d want 2", len(out.Hedges))
+	}
+
+	rec = doJSON(t, mux, http.MethodGet, "/v1/hedges?currency=EUR", nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if len(out.Hedges) != 1 || out.Hedges[0].Currency != "EUR" {
+		t.Fatalf("eur filter: %+v", out.Hedges)
+	}
+
+	rec = doJSON(t, mux, http.MethodGet, "/v1/hedges?status=executed", nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if len(out.Hedges) != 1 || out.Hedges[0].ID != "h2" {
+		t.Fatalf("executed filter: %+v", out.Hedges)
+	}
+}
+
+func TestListExposures(t *testing.T) {
+	svc, _, _, tr := newTestService(t, nil)
+	tr.AddExposure("EUR", 100000)
+	tr.AddExposure("JPY", -30000)
+	mux := NewMux(svc)
+
+	rec := doJSON(t, mux, http.MethodGet, "/v1/exposures", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	var out struct {
+		Exposures []*domain.Exposure `json:"exposures"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if len(out.Exposures) != 2 {
+		t.Fatalf("exposures=%d want 2", len(out.Exposures))
+	}
+}

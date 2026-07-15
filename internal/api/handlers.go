@@ -615,12 +615,45 @@ func NewMux(svc *Service) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", Healthz)
 	mux.HandleFunc("GET /readyz", svc.Readyz)
+	mux.HandleFunc("GET /v1/exposures", svc.ListExposures)
 	mux.HandleFunc("GET /v1/exposure/{currency}", svc.GetExposure)
 	mux.HandleFunc("POST /v1/exposure/{currency}", svc.AddExposure)
+	mux.HandleFunc("GET /v1/hedges", svc.ListHedges)
 	mux.HandleFunc("POST /v1/hedges", svc.CreateHedge)
 	mux.HandleFunc("GET /v1/hedges/{id}", svc.GetHedge)
 	mux.HandleFunc("GET /v1/pnl", svc.PnL)
 	mux.HandleFunc("GET /v1/slippage", svc.Slippage)
 	mux.HandleFunc("GET /v1/settlement", svc.Settlement)
 	return mux
+}
+
+// ListHedges handles GET /v1/hedges?currency=&status=.
+func (s *Service) ListHedges(w http.ResponseWriter, r *http.Request) {
+	currency := strings.ToUpper(r.URL.Query().Get("currency"))
+	status := r.URL.Query().Get("status")
+	var all []*domain.Hedge
+	if currency != "" {
+		all = s.Store.HedgesByCurrency(currency)
+	} else {
+		all = s.Store.AllHedges()
+	}
+	if status != "" {
+		filtered := all[:0]
+		for _, h := range all {
+			if string(h.Status) == status {
+				filtered = append(filtered, h)
+			}
+		}
+		all = filtered
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hedges": all})
+}
+
+// ListExposures handles GET /v1/exposures.
+func (s *Service) ListExposures(w http.ResponseWriter, r *http.Request) {
+	exposures := s.Tracker.AllExposures()
+	if exposures == nil {
+		exposures = []*domain.Exposure{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"exposures": exposures})
 }
