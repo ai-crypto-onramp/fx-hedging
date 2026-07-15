@@ -24,7 +24,7 @@ import (
 // audit sink, rate cache, settlement engine, and downstream clients,
 // exposing handler methods.
 type Service struct {
-	Store      *store.Store
+	Store      store.Store
 	Tracker    *exposure.Tracker
 	Provider   provider.FXProvider
 	Policy     *policy.Policy
@@ -36,7 +36,7 @@ type Service struct {
 }
 
 // NewService returns a Service ready to serve requests.
-func NewService(st *store.Store, tr *exposure.Tracker, p provider.FXProvider, pol *policy.Policy, a audit.Sink) *Service {
+func NewService(st store.Store, tr *exposure.Tracker, p provider.FXProvider, pol *policy.Policy, a audit.Sink) *Service {
 	return &Service{
 		Store:      st,
 		Tracker:    tr,

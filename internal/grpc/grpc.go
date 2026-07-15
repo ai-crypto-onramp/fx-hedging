@@ -29,7 +29,7 @@ type Services struct {
 	Cache    *ratecache.Cache
 	Policy   *policy.Policy
 	Router   *executor.Router
-	Store    *store.Store
+	Store    store.Store
 	Now      func() time.Time
 }
 

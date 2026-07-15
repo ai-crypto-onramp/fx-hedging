@@ -8,8 +8,27 @@ import (
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
 
-// Store is a thread-safe in-memory store of hedges and slippage samples.
-type Store struct {
+// Store is the persistence interface for hedges, slippage samples, P&L
+// entries, and exposure snapshots. It is implemented by the in-memory
+// MemStore and the Postgres-backed store in internal/store/postgres.
+type Store interface {
+	CreateHedge(h *domain.Hedge)
+	GetHedgeByClientRequest(reqID string) *domain.Hedge
+	HasFill(venue, venueTradeID string) bool
+	GetHedge(id string) *domain.Hedge
+	UpdateHedge(id string, fn func(*domain.Hedge) error) (*domain.Hedge, error)
+	HedgesByCurrency(currency string) []*domain.Hedge
+	AllHedges() []*domain.Hedge
+	AddSlippageSample(sample domain.SlippageSample)
+	AddPnL(p domain.PnL)
+	AllPnL() []domain.PnL
+	AppendExposureSnapshot(e *domain.Exposure)
+	ExposureSnapshots(currency string) []domain.Exposure
+	SlippageSamples(pair string, from, to time.Time) []domain.SlippageSample
+}
+
+// MemStore is a thread-safe in-memory store of hedges and slippage samples.
+type MemStore struct {
 	mu       sync.RWMutex
 	hedges   map[string]*domain.Hedge
 	byCcy    map[string][]string // currency -> hedge ids
@@ -20,8 +39,8 @@ type Store struct {
 }
 
 // New returns an empty in-memory store.
-func New() *Store {
-	return &Store{
+func New() *MemStore {
+	return &MemStore{
 		hedges: make(map[string]*domain.Hedge),
 		byCcy:  make(map[string][]string),
 		byReq:  make(map[string]string),
@@ -29,7 +48,7 @@ func New() *Store {
 }
 
 // CreateHedge stores h. It does not check for duplicates.
-func (s *Store) CreateHedge(h *domain.Hedge) {
+func (s *MemStore) CreateHedge(h *domain.Hedge) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hedges[h.ID] = h
@@ -42,7 +61,7 @@ func (s *Store) CreateHedge(h *domain.Hedge) {
 // GetHedgeByClientRequest returns the hedge previously stored with the given
 // client request id, or nil if none. Used for idempotent submission: a
 // duplicate submission with the same client request id returns the original.
-func (s *Store) GetHedgeByClientRequest(reqID string) *domain.Hedge {
+func (s *MemStore) GetHedgeByClientRequest(reqID string) *domain.Hedge {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	id, ok := s.byReq[reqID]
@@ -54,7 +73,7 @@ func (s *Store) GetHedgeByClientRequest(reqID string) *domain.Hedge {
 
 // HasFill returns true if a fill with the given (venue, venueTradeID) is
 // already recorded on any hedge. Used for idempotent fill callbacks.
-func (s *Store) HasFill(venue, venueTradeID string) bool {
+func (s *MemStore) HasFill(venue, venueTradeID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if venue == "" || venueTradeID == "" {
@@ -71,7 +90,7 @@ func (s *Store) HasFill(venue, venueTradeID string) bool {
 }
 
 // GetHedge returns a deep copy of the hedge with id, or nil if not found.
-func (s *Store) GetHedge(id string) *domain.Hedge {
+func (s *MemStore) GetHedge(id string) *domain.Hedge {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	h, ok := s.hedges[id]
@@ -84,7 +103,7 @@ func (s *Store) GetHedge(id string) *domain.Hedge {
 // UpdateHedge applies fn to the hedge with id while holding the write lock,
 // persisting the result. Returns the updated hedge and the error from fn.
 // If the hedge is not found, fn is not called and ErrNotFound is returned.
-func (s *Store) UpdateHedge(id string, fn func(*domain.Hedge) error) (*domain.Hedge, error) {
+func (s *MemStore) UpdateHedge(id string, fn func(*domain.Hedge) error) (*domain.Hedge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	h, ok := s.hedges[id]
@@ -99,7 +118,7 @@ func (s *Store) UpdateHedge(id string, fn func(*domain.Hedge) error) (*domain.He
 
 // HedgesByCurrency returns deep copies of all hedges for the given currency,
 // in created-at ascending order.
-func (s *Store) HedgesByCurrency(currency string) []*domain.Hedge {
+func (s *MemStore) HedgesByCurrency(currency string) []*domain.Hedge {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ids := s.byCcy[currency]
@@ -112,7 +131,7 @@ func (s *Store) HedgesByCurrency(currency string) []*domain.Hedge {
 }
 
 // AllHedges returns deep copies of all hedges, in created-at ascending order.
-func (s *Store) AllHedges() []*domain.Hedge {
+func (s *MemStore) AllHedges() []*domain.Hedge {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*domain.Hedge, 0, len(s.hedges))
@@ -124,21 +143,21 @@ func (s *Store) AllHedges() []*domain.Hedge {
 }
 
 // AddSlippageSample appends a slippage sample.
-func (s *Store) AddSlippageSample(sample domain.SlippageSample) {
+func (s *MemStore) AddSlippageSample(sample domain.SlippageSample) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.samples = append(s.samples, sample)
 }
 
 // AddPnL appends a P&L entry.
-func (s *Store) AddPnL(p domain.PnL) {
+func (s *MemStore) AddPnL(p domain.PnL) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pnlRows = append(s.pnlRows, p)
 }
 
 // AllPnL returns all stored P&L entries.
-func (s *Store) AllPnL() []domain.PnL {
+func (s *MemStore) AllPnL() []domain.PnL {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]domain.PnL, len(s.pnlRows))
@@ -147,7 +166,7 @@ func (s *Store) AllPnL() []domain.PnL {
 }
 
 // AppendExposureSnapshot appends an exposure snapshot row (persisted view).
-func (s *Store) AppendExposureSnapshot(e *domain.Exposure) {
+func (s *MemStore) AppendExposureSnapshot(e *domain.Exposure) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expRows = append(s.expRows, *e)
@@ -155,7 +174,7 @@ func (s *Store) AppendExposureSnapshot(e *domain.Exposure) {
 
 // ExposureSnapshots returns stored exposure snapshots for a currency
 // (empty = all) ordered by UpdatedAt ascending.
-func (s *Store) ExposureSnapshots(currency string) []domain.Exposure {
+func (s *MemStore) ExposureSnapshots(currency string) []domain.Exposure {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]domain.Exposure, 0, len(s.expRows))
@@ -171,7 +190,7 @@ func (s *Store) ExposureSnapshots(currency string) []domain.Exposure {
 
 // SlippageSamples returns samples filtered by pair (empty = all) and the
 // [from, to] time range (zero values = unbounded on that side).
-func (s *Store) SlippageSamples(pair string, from, to time.Time) []domain.SlippageSample {
+func (s *MemStore) SlippageSamples(pair string, from, to time.Time) []domain.SlippageSample {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]domain.SlippageSample, 0, len(s.samples))

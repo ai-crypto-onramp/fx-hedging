@@ -20,6 +20,7 @@ import (
 	"github.com/ai-crypto-onramp/fx-hedging/internal/provider"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/ratecache"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
+	"github.com/ai-crypto-onramp/fx-hedging/internal/store/postgres"
 )
 
 func main() {
@@ -97,7 +98,17 @@ func run() error {
 
 // newService wires the service dependencies from environment configuration.
 func newService() *api.Service {
-	st := store.New()
+	ctx := context.Background()
+	var st store.Store
+	if dsn := os.Getenv("DB_URL"); dsn != "" {
+		db, err := postgres.Open(ctx, dsn)
+		if err != nil {
+			log.Fatalf("postgres: open: %v", err)
+		}
+		st = db
+	} else {
+		st = store.New()
+	}
 	tr := exposure.New()
 	p := provider.NewDummy()
 	pol := policy.New()

@@ -16,7 +16,7 @@ import (
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
 )
 
-func newTestService(t *testing.T, p provider.FXProvider) (*Service, *audit.Recorder, *store.Store, *exposure.Tracker) {
+func newTestService(t *testing.T, p provider.FXProvider) (*Service, *audit.Recorder, store.Store, *exposure.Tracker) {
 	t.Helper()
 	st := store.New()
 	tr := exposure.New()
