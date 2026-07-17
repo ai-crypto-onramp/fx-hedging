@@ -160,8 +160,8 @@ func TestSubmitHedgePlan(t *testing.T) {
 	resp, err := c.SubmitHedgePlan(context.Background(), &fxpb.SubmitHedgePlanRequest{
 		PlanId: "p1",
 		Legs: []*fxpb.HedgePlanLeg{
-			{Currency: "EUR", Notional: 50_000, Tenor: "spot", Type: "spot"},
-			{Currency: "JPY", Notional: 30_000, Tenor: "forward", Type: "forward", ValueDate: "2026-08-01"},
+			{Currency: "EUR", Notional: 50_000, Tenor: "SPOT", Type: "SPOT"},
+			{Currency: "JPY", Notional: 30_000, Tenor: "FORWARD", Type: "FORWARD", ValueDate: "2026-08-01"},
 		},
 	})
 	if err != nil {
@@ -191,7 +191,7 @@ func TestSubmitHedgePlanRejectsCapBreach(t *testing.T) {
 	resp, err := c.SubmitHedgePlan(context.Background(), &fxpb.SubmitHedgePlanRequest{
 		PlanId: "p2",
 		Legs: []*fxpb.HedgePlanLeg{
-			{Currency: "EUR", Notional: 1_000_000, Tenor: "spot", Type: "spot"},
+			{Currency: "EUR", Notional: 1_000_000, Tenor: "SPOT", Type: "SPOT"},
 		},
 	})
 	if err != nil {
@@ -215,7 +215,7 @@ func TestSubmitHedgePlanForwardValueDate(t *testing.T) {
 	resp, _ := c.SubmitHedgePlan(context.Background(), &fxpb.SubmitHedgePlanRequest{
 		PlanId: "p3",
 		Legs: []*fxpb.HedgePlanLeg{
-			{Currency: "EUR", Notional: 50_000, Tenor: "forward", Type: "forward", ValueDate: "2026-08-01"},
+			{Currency: "EUR", Notional: 50_000, Tenor: "FORWARD", Type: "FORWARD", ValueDate: "2026-08-01"},
 		},
 	})
 	if len(resp.Results) != 1 {
@@ -226,10 +226,10 @@ func TestSubmitHedgePlanForwardValueDate(t *testing.T) {
 		t.Fatal("hedge not in store")
 	}
 	if h.Tenor != domain.TenorForward {
-		t.Fatalf("tenor = %q, want forward", h.Tenor)
+		t.Fatalf("tenor = %q, want %q", h.Tenor, domain.TenorForward)
 	}
 	if h.Type != domain.TypeForward {
-		t.Fatalf("type = %q, want forward", h.Type)
+		t.Fatalf("type = %q, want %q", h.Type, domain.TypeForward)
 	}
 	wantVD := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	if !h.ValueDate.Equal(wantVD) {

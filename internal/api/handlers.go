@@ -211,8 +211,9 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
+	hedgeID, _ := uuid.NewV7()
 	h := &domain.Hedge{
-		ID:              uuid.NewString(),
+		ID:              hedgeID.String(),
 		Currency:        currency,
 		Notional:        req.Notional,
 		Tenor:           tenor,
@@ -630,7 +631,7 @@ func NewMux(svc *Service) *http.ServeMux {
 // ListHedges handles GET /v1/hedges?currency=&status=.
 func (s *Service) ListHedges(w http.ResponseWriter, r *http.Request) {
 	currency := strings.ToUpper(r.URL.Query().Get("currency"))
-	status := r.URL.Query().Get("status")
+	status := strings.ToUpper(r.URL.Query().Get("status"))
 	var all []*domain.Hedge
 	if currency != "" {
 		all = s.Store.HedgesByCurrency(currency)

@@ -6,26 +6,26 @@ import "time"
 type HedgeStatus string
 
 const (
-	StatusPending    HedgeStatus = "pending"
-	StatusExecuting  HedgeStatus = "executing"
-	StatusExecuted   HedgeStatus = "executed"
-	StatusFailed     HedgeStatus = "failed"
+	StatusPending   HedgeStatus = "PENDING"
+	StatusExecuting HedgeStatus = "EXECUTING"
+	StatusExecuted  HedgeStatus = "EXECUTED"
+	StatusFailed    HedgeStatus = "FAILED"
 )
 
 // Tenor is the settlement timing of a hedge.
 type Tenor string
 
 const (
-	TenorSpot     Tenor = "spot"
-	TenorForward  Tenor = "forward"
+	TenorSpot    Tenor = "SPOT"
+	TenorForward Tenor = "FORWARD"
 )
 
 // HedgeType is the kind of hedge instrument.
 type HedgeType string
 
 const (
-	TypeSpot    HedgeType = "spot"
-	TypeForward HedgeType = "forward"
+	TypeSpot    HedgeType = "SPOT"
+	TypeForward HedgeType = "FORWARD"
 )
 
 // IsValidTenor reports whether t is a recognized tenor.

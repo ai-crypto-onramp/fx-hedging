@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -83,13 +84,14 @@ func (d *DB) syncFills(ctx context.Context, h *domain.Hedge) {
 		return
 	}
 	for _, f := range h.Fills {
+		fillID, _ := uuid.NewV7()
 		_, _ = d.pool.Exec(ctx, `INSERT INTO hedge_executions
-		(hedge_id, venue, venue_trade_id, fill_price, quoted_price, slippage_bps, amount, ts)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		(id, hedge_id, venue, venue_trade_id, fill_price, quoted_price, slippage_bps, amount, ts)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (venue, venue_trade_id) DO UPDATE SET
 			fill_price=EXCLUDED.fill_price, quoted_price=EXCLUDED.quoted_price,
-			slippage_bps=EXCLUDED.slippage_bps, amount=EXCLUDED.amount, ts=EXCLUDED.ts`,
-			h.ID, f.Venue, f.VenueTradeID, f.Price, h.QuotedRate, h.SlippageBPS, f.Amount, f.Timestamp)
+			slippage_bps=EXCLUDED.slippage_bps, amount=EXCLUDED.amount, ts=EXCLUDED.ts, updated_at=now()`,
+			fillID, h.ID, f.Venue, f.VenueTradeID, f.Price, h.QuotedRate, h.SlippageBPS, f.Amount, f.Timestamp)
 	}
 }
 
@@ -268,18 +270,20 @@ func (d *DB) scanHedges(ctx context.Context, rows pgx.Rows) []*domain.Hedge {
 
 func (d *DB) AddSlippageSample(sample domain.SlippageSample) {
 	ctx := context.Background()
+	sampleID, _ := uuid.NewV7()
 	_, _ = d.pool.Exec(ctx, `INSERT INTO slippage_samples
-	(pair, quoted_rate, executed_rate, slippage_bps, ts)
-	VALUES ($1,$2,$3,$4,$5)`,
-		sample.Pair, sample.QuotedRate, sample.ExecutedRate, sample.SlippageBPS, sample.Timestamp)
+	(id, pair, quoted_rate, executed_rate, slippage_bps, ts)
+	VALUES ($1,$2,$3,$4,$5,$6)`,
+		sampleID, sample.Pair, sample.QuotedRate, sample.ExecutedRate, sample.SlippageBPS, sample.Timestamp)
 }
 
 func (d *DB) AddPnL(p domain.PnL) {
 	ctx := context.Background()
+	pnlID, _ := uuid.NewV7()
 	_, _ = d.pool.Exec(ctx, `INSERT INTO fx_pnl
-	(currency, component, realized, unrealized, rate)
-	VALUES ($1,$2,$3,$4,$5)`,
-		p.Currency, "hedge", p.Realized, p.Unrealized, p.Components.SlippageCost)
+	(id, currency, component, realized, unrealized, rate, ts)
+	VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		pnlID, p.Currency, "HEDGE_PNL", p.Realized, p.Unrealized, p.Components.SlippageCost, time.Now().UTC())
 }
 
 func (d *DB) AllPnL() []domain.PnL {
@@ -306,10 +310,11 @@ func (d *DB) AllPnL() []domain.PnL {
 
 func (d *DB) AppendExposureSnapshot(e *domain.Exposure) {
 	ctx := context.Background()
+	expID, _ := uuid.NewV7()
 	_, _ = d.pool.Exec(ctx, `INSERT INTO fx_exposures
-	(currency, net_amount, hedge_coverage, open_amount, ts)
-	VALUES ($1,$2,$3,$4,$5)`,
-		e.Currency, e.NetAmount, e.HedgeCoverage, e.OpenAmount, e.UpdatedAt)
+	(id, currency, net_amount, hedge_coverage, open_amount, ts)
+	VALUES ($1,$2,$3,$4,$5,$6)`,
+		expID, e.Currency, e.NetAmount, e.HedgeCoverage, e.OpenAmount, e.UpdatedAt)
 }
 
 func (d *DB) ExposureSnapshots(currency string) []domain.Exposure {

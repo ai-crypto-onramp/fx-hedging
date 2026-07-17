@@ -162,7 +162,7 @@ func TestCreateHedgeSuccess(t *testing.T) {
 	// Set up exposure first.
 	tr.AddExposure("EUR", 100_000)
 
-	body := map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "spot", "type": "spot"}
+	body := map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "SPOT", "type": "SPOT"}
 	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
 	if r.Code != http.StatusCreated {
 		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
@@ -217,10 +217,10 @@ func TestCreateHedgeValidation(t *testing.T) {
 		body map[string]interface{}
 		want int
 	}{
-		{"missing currency", map[string]interface{}{"notional": 100, "tenor": "spot", "type": "spot"}, http.StatusBadRequest},
-		{"zero notional", map[string]interface{}{"currency": "EUR", "notional": 0, "tenor": "spot", "type": "spot"}, http.StatusBadRequest},
-		{"bad tenor", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "swap", "type": "spot"}, http.StatusBadRequest},
-		{"bad type", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "option"}, http.StatusBadRequest},
+		{"missing currency", map[string]interface{}{"notional": 100, "tenor": "SPOT", "type": "SPOT"}, http.StatusBadRequest},
+		{"zero notional", map[string]interface{}{"currency": "EUR", "notional": 0, "tenor": "SPOT", "type": "SPOT"}, http.StatusBadRequest},
+		{"bad tenor", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "swap", "type": "SPOT"}, http.StatusBadRequest},
+		{"bad type", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "SPOT", "type": "option"}, http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -249,7 +249,7 @@ func TestCreateHedgeProviderFailure(t *testing.T) {
 	svc, rec, st, _ := newTestService(t, d)
 	mux := NewMux(svc)
 
-	body := map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot"}
+	body := map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "SPOT", "type": "SPOT"}
 	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
 	if r.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d, want 502, body=%s", r.Code, r.Body.String())
@@ -280,7 +280,7 @@ func TestCreateHedgeWithSlippage(t *testing.T) {
 	svc, _, _, _ := newTestService(t, d)
 	mux := NewMux(svc)
 
-	body := map[string]interface{}{"currency": "EUR", "notional": 100_000, "tenor": "spot", "type": "spot"}
+	body := map[string]interface{}{"currency": "EUR", "notional": 100_000, "tenor": "SPOT", "type": "SPOT"}
 	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
 	if r.Code != http.StatusCreated {
 		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
@@ -297,7 +297,7 @@ func TestGetHedge(t *testing.T) {
 	mux := NewMux(svc)
 
 	// Create one via API.
-	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot"})
+	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "SPOT", "type": "SPOT"})
 	var created domain.Hedge
 	_ = json.Unmarshal(r.Body.Bytes(), &created)
 
@@ -325,8 +325,8 @@ func TestPnLEndpoint(t *testing.T) {
 	mux := NewMux(svc)
 
 	// Create two hedges for different currencies.
-	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100_000, "tenor": "spot", "type": "spot"})
-	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "JPY", "notional": 50_000, "tenor": "spot", "type": "spot"})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100_000, "tenor": "SPOT", "type": "SPOT"})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "JPY", "notional": 50_000, "tenor": "SPOT", "type": "SPOT"})
 
 	r := doJSON(t, mux, http.MethodGet, "/v1/pnl", nil)
 	if r.Code != http.StatusOK {
@@ -359,7 +359,7 @@ func TestPnLDateFilter(t *testing.T) {
 	mux := NewMux(svc)
 
 	// Create a hedge.
-	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot"})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "SPOT", "type": "SPOT"})
 
 	// Query a range starting in the future -> no hedges.
 	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
@@ -378,7 +378,7 @@ func TestSlippageEndpoint(t *testing.T) {
 	svc, _, _, _ := newTestService(t, nil)
 	mux := NewMux(svc)
 
-	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot"})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "SPOT", "type": "SPOT"})
 
 	r := doJSON(t, mux, http.MethodGet, "/v1/slippage?pair=EURUSD", nil)
 	if r.Code != http.StatusOK {
@@ -493,7 +493,7 @@ func TestAddExposureCapBreachAllowsReducingFlow(t *testing.T) {
 func TestCreateHedgeIdempotentClientRequestID(t *testing.T) {
 	svc, _, _, _ := newTestService(t, nil)
 	mux := NewMux(svc)
-	body := map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot", "client_request_id": "req-1"}
+	body := map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "SPOT", "type": "SPOT", "client_request_id": "req-1"}
 	r1 := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
 	if r1.Code != http.StatusCreated {
 		t.Fatalf("r1 code = %d", r1.Code)
@@ -516,7 +516,7 @@ func TestCreateHedgeSlippageAlert(t *testing.T) {
 	svc, rec, _, _ := newTestService(t, d)
 	svc.Policy.SlippageAlertBPS = 5
 	mux := NewMux(svc)
-	body := map[string]interface{}{"currency": "EUR", "notional": 100_000, "tenor": "spot", "type": "spot"}
+	body := map[string]interface{}{"currency": "EUR", "notional": 100_000, "tenor": "SPOT", "type": "SPOT"}
 	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
 	if r.Code != http.StatusCreated {
 		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
@@ -537,7 +537,7 @@ func TestSettlementEndpoint(t *testing.T) {
 	mux := NewMux(svc)
 	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": 100_000})
 	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/JPY", map[string]interface{}{"amount": -30_000})
-	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "spot", "type": "spot"})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "SPOT", "type": "SPOT"})
 	r := doJSON(t, mux, http.MethodGet, "/v1/settlement", nil)
 	if r.Code != http.StatusOK {
 		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
@@ -554,7 +554,7 @@ func TestSlippageTuningFeedsPolicy(t *testing.T) {
 	svc.Policy.SlippageAlertBPS = 5
 	svc.Policy.WideningStep = 0.05
 	mux := NewMux(svc)
-	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "spot", "type": "spot"})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 100, "tenor": "SPOT", "type": "SPOT"})
 	before := svc.Policy.EffectiveRatio("EUR")
 	_ = doJSON(t, mux, http.MethodGet, "/v1/slippage?pair=EURUSD", nil)
 	after := svc.Policy.EffectiveRatio("EUR")
@@ -582,7 +582,7 @@ func TestIntegrationServer(t *testing.T) {
 	resp.Body.Close()
 
 	// Create hedge.
-	hbody, _ := json.Marshal(map[string]interface{}{"currency": "EUR", "notional": 180_000, "tenor": "spot", "type": "spot"})
+	hbody, _ := json.Marshal(map[string]interface{}{"currency": "EUR", "notional": 180_000, "tenor": "SPOT", "type": "SPOT"})
 	resp, err = http.Post(srv.URL+"/v1/hedges", "application/json", bytes.NewReader(hbody))
 	if err != nil {
 		t.Fatalf("post hedge: %v", err)

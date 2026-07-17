@@ -154,7 +154,8 @@ func snapshotToProto(e *domain.Exposure) *fxpb.ExposureSnapshot {
 func (g *Server) SubmitHedgePlan(ctx context.Context, req *fxpb.SubmitHedgePlanRequest) (*fxpb.SubmitHedgePlanResponse, error) {
 	planID := req.GetPlanId()
 	if planID == "" {
-		planID = "plan-" + uuid.NewString()
+		planIDv7, _ := uuid.NewV7()
+		planID = "plan-" + planIDv7.String()
 	}
 
 	// Coordinate with the policy layer: reject plans that would breach the
@@ -220,14 +221,16 @@ func (g *Server) executeLeg(ctx context.Context, planID string, leg *fxpb.HedgeP
 		}
 	}
 
+	hedgeID, _ := uuid.NewV7()
+	reqIDv7, _ := uuid.NewV7()
 	h := &domain.Hedge{
-		ID:              uuid.NewString(),
+		ID:              hedgeID.String(),
 		Currency:        ccy,
 		Notional:        notional,
 		Tenor:           tenor,
 		Type:            htype,
 		Status:          domain.StatusPending,
-		ClientRequestID: planID + ":" + ccy + ":" + uuid.NewString(),
+		ClientRequestID: planID + ":" + ccy + ":" + reqIDv7.String(),
 		ValueDate:       valueDate,
 		CreatedAt:       g.s.Now(),
 		UpdatedAt:       g.s.Now(),

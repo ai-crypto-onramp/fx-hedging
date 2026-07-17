@@ -119,7 +119,7 @@ func (b *BankAdapter) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fil
 		return []domain.Fill{{
 			HedgeID:      h.ID,
 			Venue:        b.Name(),
-			VenueTradeID: "bank-" + uuid.NewString(),
+			VenueTradeID: func() string { v, _ := uuid.NewV7(); return "bank-" + v.String() }(),
 			Price:        h.QuotedRate,
 			Amount:       h.Notional,
 			Timestamp:    time.Now().UTC(),
@@ -255,7 +255,7 @@ func (v *VenueAdapter) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fi
 		return []domain.Fill{{
 			HedgeID:      h.ID,
 			Venue:        v.Name(),
-			VenueTradeID: "venue-" + uuid.NewString(),
+			VenueTradeID: func() string { v, _ := uuid.NewV7(); return "venue-" + v.String() }(),
 			Price:        executed,
 			Amount:       h.Notional,
 			Timestamp:    time.Now().UTC(),
