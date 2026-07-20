@@ -99,6 +99,7 @@ func run() error {
 // newService wires the service dependencies from environment configuration.
 func newService() *api.Service {
 	ctx := context.Background()
+	devMode := os.Getenv("DEV_MODE") == "1"
 	var st store.Store
 	if dsn := os.Getenv("DB_URL"); dsn != "" {
 		db, err := postgres.Open(ctx, dsn)
@@ -107,10 +108,26 @@ func newService() *api.Service {
 		}
 		st = db
 	} else {
+		if !devMode {
+			log.Fatalf("DB_URL not set and DEV_MODE!=1; refusing to start in production mode")
+		}
+		log.Printf("DEV_MODE=1: DB_URL unset — using in-memory store (NOT FOR PRODUCTION)")
 		st = store.New()
 	}
+	var p provider.FXProvider
+	if devMode {
+		log.Printf("DEV_MODE=1: using stub FX provider (NOT FOR PRODUCTION)")
+		p = provider.NewDummy()
+	} else {
+		// Real FX provider client not yet implemented; require FX_PROVIDER_URL.
+		if os.Getenv("FX_PROVIDER_URL") == "" {
+			log.Fatalf("FX_PROVIDER_URL required in production mode; real FX provider client not yet implemented — set DEV_MODE=1 for local dev")
+		}
+		// Unreachable until a real client is wired; fall through to dummy so
+		// the compile shape stays stable. The fatal above guards prod.
+		p = provider.NewDummy()
+	}
 	tr := exposure.New()
-	p := provider.NewDummy()
 	pol := policy.New()
 	rec := audit.NewRecorder()
 	svc := api.NewService(st, tr, p, pol, rec)

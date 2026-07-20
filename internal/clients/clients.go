@@ -8,16 +8,21 @@ package clients
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
+	"github.com/google/uuid"
+	"github.com/segmentio/kafka-go"
 )
 
 // ErrUnavailable is returned when the downstream is unreachable.
@@ -26,28 +31,51 @@ var ErrUnavailable = errors.New("clients: unavailable")
 // ErrBadRequest is returned when the downstream rejects the payload.
 var ErrBadRequest = errors.New("clients: bad request")
 
-// AuditClient is the outbound audit-event-log client. It posts audit
-// events to AUDIT_EVENT_LOG_URL with an Idempotency-Key so retries are
-// safe. Events are emitted in order per entity (the caller is responsible
-// for serializing events per entity; the client preserves send order).
+// AuditClient is the outbound audit-event-log client. When KAFKA_BROKERS is
+// set it publishes the canonical audit.v1 envelope to the `audit.v1` Kafka
+// topic; otherwise it falls back to HTTP POST to AUDIT_EVENT_LOG_URL with
+// an Idempotency-Key (deprecated). When neither is set, Emit is a no-op so
+// the service degrades safely in local dev.
 type AuditClient struct {
 	baseURL string
 	client  *http.Client
+	kafka   *kafka.Writer
 	dl      DeadLetterStore
 	mu      sync.Mutex
 	last    map[string]string // entityKey -> last emitted event id (ordering guard)
 }
 
-// NewAuditClient returns an AuditClient targeting AUDIT_EVENT_LOG_URL. If
-// the URL is empty, Emit is a no-op (returns nil) so the service degrades
-// safely in local dev. dl may be nil.
+// NewAuditClient returns an AuditClient. When KAFKA_BROKERS is set the client
+// publishes to the `audit.v1` Kafka topic; otherwise it targets
+// AUDIT_EVENT_LOG_URL (HTTP fallback). dl may be nil.
 func NewAuditClient(dl DeadLetterStore) *AuditClient {
-	return &AuditClient{
+	c := &AuditClient{
 		baseURL: os.Getenv("AUDIT_EVENT_LOG_URL"),
 		client:  &http.Client{Timeout: 5 * time.Second},
 		dl:      dl,
 		last:    map[string]string{},
 	}
+	if brokers := os.Getenv("KAFKA_BROKERS"); brokers != "" {
+		c.kafka = &kafka.Writer{
+			Addr:         kafka.TCP(splitCSV(brokers)...),
+			Topic:        "audit.v1",
+			Balancer:     &kafka.LeastBytes{},
+			BatchTimeout: 10 * time.Millisecond,
+			RequiredAcks: kafka.RequireAll,
+		}
+	}
+	return c
+}
+
+func splitCSV(s string) []string {
+	out := []string{}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // AuditPayload is the JSON body posted to audit-event-log.
@@ -61,19 +89,21 @@ type AuditPayload struct {
 	Amount    float64 `json:"amount,omitempty"`
 }
 
-// Emit posts ev to audit-event-log with idempotency key eventID. It
-// retries up to 3 times with backoff. On terminal failure the event is
-// written to the dead-letter store (if configured) and ErrUnavailable is
-// returned. Send order per entityKey (hedge id or currency) is preserved
-// by serializing emits under the client mutex.
+// Emit posts ev to audit-event-log with idempotency key eventID. When a
+// Kafka writer is configured it publishes the canonical audit.v1 envelope
+// to `audit.v1`. Otherwise it falls back to HTTP POST to AUDIT_EVENT_LOG_URL
+// with retry/backoff (deprecated). When neither is set, Emit is a no-op.
 func (a *AuditClient) Emit(ctx context.Context, ev AuditPayload, eventID, entityKey string) error {
-	if a.baseURL == "" {
-		return nil
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if entityKey != "" {
 		a.last[entityKey] = eventID
+	}
+	if a.kafka != nil {
+		return a.emitKafka(ctx, ev, eventID)
+	}
+	if a.baseURL == "" {
+		return nil
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {
@@ -122,6 +152,40 @@ func (a *AuditClient) Emit(ctx context.Context, ev AuditPayload, eventID, entity
 		}
 		a.deadLetter("audit", eventID, body, fmt.Sprintf("status %d: %s", resp.StatusCode, string(respBody)))
 		return fmt.Errorf("%w: status %d", ErrUnavailable, resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *AuditClient) emitKafka(ctx context.Context, ev AuditPayload, eventID string) error {
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(payload)
+	payloadHash := "sha256:" + hex.EncodeToString(sum[:])
+	id := eventID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	envelope := map[string]any{
+		"schema_version": "1",
+		"id":              id,
+		"ts":              ev.At,
+		"source_service":  "fx-hedging",
+		"actor_id":        "fx-hedging",
+		"action":          ev.EventType,
+		"target_type":     "hedge",
+		"target_id":       ev.HedgeID,
+		"payload_hash":    payloadHash,
+		"payload":         json.RawMessage(payload),
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	if err := a.kafka.WriteMessages(ctx, kafka.Message{Key: []byte(id), Value: body}); err != nil {
+		a.deadLetter("audit", id, body, err.Error())
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return nil
 }
