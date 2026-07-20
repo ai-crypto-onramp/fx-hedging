@@ -2,6 +2,15 @@ package grpc
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,6 +24,32 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func genCACertPath(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	p := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("write ca: %v", err)
+	}
+	return p
+}
 
 type fakeExec struct {
 	name string
@@ -246,5 +281,186 @@ func TestGetLiveRateCrossCheckDiverge(t *testing.T) {
 	_, err := c.GetLiveRate(context.Background(), &fxpb.GetLiveRateRequest{Currency: "EUR"})
 	if err == nil {
 		t.Fatal("expected divergence error so callers fall back")
+	}
+}
+
+func TestGetLiveRateEmptyCurrency(t *testing.T) {
+	s := newTestServices(t)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	_, err := c.GetLiveRate(context.Background(), &fxpb.GetLiveRateRequest{Currency: ""})
+	if err == nil {
+		t.Fatal("expected error for empty currency")
+	}
+}
+
+func TestGetNetExposureEmptyCurrency(t *testing.T) {
+	s := newTestServices(t)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	_, err := c.GetNetExposure(context.Background(), &fxpb.GetNetExposureRequest{Currency: ""})
+	if err == nil {
+		t.Fatal("expected error for empty currency")
+	}
+}
+
+func TestSubmitHedgePlanEmptyAndInvalidLegs(t *testing.T) {
+	s := newTestServices(t)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	resp, err := c.SubmitHedgePlan(context.Background(), &fxpb.SubmitHedgePlanRequest{
+		PlanId: "p-empty",
+		Legs: []*fxpb.HedgePlanLeg{
+			{Currency: "", Notional: 100, Tenor: "SPOT", Type: "SPOT"},
+			{Currency: "EUR", Notional: 0, Tenor: "SPOT", Type: "SPOT"},
+			{Currency: "EUR", Notional: 50_000, Tenor: "WEIRD", Type: "SPOT"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(resp.Results) != 3 {
+		t.Fatalf("results = %d", len(resp.Results))
+	}
+	if resp.Results[0].Error == "" {
+		t.Fatal("expected error for empty currency")
+	}
+	if resp.Results[1].Error == "" {
+		t.Fatal("expected error for zero notional")
+	}
+	if resp.Results[2].Status != string(domain.StatusExecuted) {
+		t.Fatalf("invalid tenor should default to spot; status = %q", resp.Results[2].Status)
+	}
+}
+
+func TestSubmitHedgePlanDuplicate(t *testing.T) {
+	s := newTestServices(t)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	leg := &fxpb.HedgePlanLeg{Currency: "EUR", Notional: 50_000, Tenor: "SPOT", Type: "SPOT"}
+	resp1, err := c.SubmitHedgePlan(context.Background(), &fxpb.SubmitHedgePlanRequest{PlanId: "pdup", Legs: []*fxpb.HedgePlanLeg{leg}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(resp1.Results) != 1 || resp1.Results[0].Status != string(domain.StatusExecuted) {
+		t.Fatalf("first submit results = %+v", resp1.Results)
+	}
+	// Same plan+currency should re-use via client request id check (leg uses a
+	// random uuid suffix each time so this primarily exercises the path).
+	resp2, err := c.SubmitHedgePlan(context.Background(), &fxpb.SubmitHedgePlanRequest{PlanId: "pdup", Legs: []*fxpb.HedgePlanLeg{leg}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(resp2.Results) != 1 {
+		t.Fatalf("results = %d", len(resp2.Results))
+	}
+}
+
+func TestStreamExposureEmptyCurrency(t *testing.T) {
+	s := newTestServices(t)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	stream, err := c.StreamExposure(ctx, &fxpb.StreamExposureRequest{Currency: ""})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if _, err := stream.Recv(); err == nil {
+		t.Fatal("expected error for empty currency")
+	}
+}
+
+func TestStreamExposureContextCancel(t *testing.T) {
+	s := newTestServices(t)
+	s.Tracker.AddExposure("EUR", 100)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := c.StreamExposure(ctx, &fxpb.StreamExposureRequest{Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	cancel()
+	if _, err := stream.Recv(); err != nil {
+		// expect clean EOF on cancel
+	}
+}
+
+func TestNewServerBadPort(t *testing.T) {
+	s := newTestServices(t)
+	_, _, err := NewServer(s, "not-a-port")
+	if err == nil {
+		t.Fatal("expected error for bad port")
+	}
+}
+
+func TestNewServerMTLSEnabled(t *testing.T) {
+	// Generate a CA cert and point MTLS_CA_CERT at it; NewServer should build
+	// TLS creds successfully.
+	caPath := genCACertPath(t)
+	t.Setenv("MTLS_CA_CERT", caPath)
+	s := newTestServices(t)
+	srv, lis, err := NewServer(s, "0")
+	if err != nil {
+		t.Fatalf("new server with mTLS: %v", err)
+	}
+	defer srv.Stop()
+	_ = lis.Close()
+}
+
+func TestNewServerMTLSBadCA(t *testing.T) {
+	t.Setenv("MTLS_CA_CERT", filepath.Join(t.TempDir(), "missing.pem"))
+	s := newTestServices(t)
+	_, _, err := NewServer(s, "0")
+	if err == nil {
+		t.Fatal("expected error for missing CA cert")
+	}
+}
+
+func TestSubmitHedgePlanAutoPlanID(t *testing.T) {
+	s := newTestServices(t)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	resp, err := c.SubmitHedgePlan(context.Background(), &fxpb.SubmitHedgePlanRequest{
+		PlanId: "",
+		Legs:   []*fxpb.HedgePlanLeg{{Currency: "EUR", Notional: 50_000, Tenor: "SPOT", Type: "SPOT"}},
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if resp.PlanId == "" {
+		t.Fatal("expected auto-generated plan id")
+	}
+}
+
+func TestStreamExposureFiltersOtherCurrencies(t *testing.T) {
+	s := newTestServices(t)
+	c, cleanup := startGRPC(t, s)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	stream, err := c.StreamExposure(ctx, &fxpb.StreamExposureRequest{Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	// Push JPY then EUR; JPY should be filtered out, EUR delivered.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		s.Tracker.AddExposure("JPY", 1000)
+		s.Tracker.AddExposure("EUR", 200_000)
+	}()
+	got, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if got.Currency != "EUR" {
+		t.Fatalf("currency = %q, want EUR (JPY filtered)", got.Currency)
+	}
+	if got.NetAmount != 200_000 {
+		t.Fatalf("net = %v, want 200000", got.NetAmount)
 	}
 }

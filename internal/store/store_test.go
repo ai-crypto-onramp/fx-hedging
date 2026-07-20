@@ -185,3 +185,25 @@ func TestExposureSnapshots(t *testing.T) {
 		t.Fatalf("first not sorted by UpdatedAt: %v", got[0].UpdatedAt)
 	}
 }
+
+func TestAllPnL(t *testing.T) {
+	s := New()
+	s.AddPnL(domain.PnL{Currency: "EUR", Total: 100})
+	s.AddPnL(domain.PnL{Currency: "JPY", Total: 50})
+	got := s.AllPnL()
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	// returned slice should be a copy
+	got[0].Total = 999
+	again := s.AllPnL()
+	if again[0].Total != 100 {
+		t.Fatalf("AllPnL should return a copy; got %v", again[0].Total)
+	}
+}
+
+func TestErrNotFoundMessage(t *testing.T) {
+	if ErrNotFound.Error() != "hedge not found" {
+		t.Fatalf("err message = %q", ErrNotFound.Error())
+	}
+}

@@ -185,3 +185,84 @@ func TestMemDeadLetterList(t *testing.T) {
 		t.Fatalf("len = %d, want 3", len(all))
 	}
 }
+
+func TestAuditClientBadRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, "bad payload")
+	}))
+	defer srv.Close()
+	t.Setenv("AUDIT_EVENT_LOG_URL", srv.URL)
+	c := NewAuditClient(nil)
+	err := c.Emit(context.Background(), AuditPayload{EventType: "x", At: time.Now().UTC().Format(time.RFC3339)}, "e1", "")
+	if !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("err = %v, want ErrBadRequest", err)
+	}
+}
+
+func TestReconClientBadRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, "bad payload")
+	}))
+	defer srv.Close()
+	t.Setenv("RECONCILIATION_URL", srv.URL)
+	c := NewReconClient(nil)
+	err := c.PublishExecution(context.Background(), ExecutionRecord{HedgeID: "h1", ExecutedAt: time.Now().UTC().Format(time.RFC3339)})
+	if !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("err = %v, want ErrBadRequest", err)
+	}
+}
+
+func TestReconClientEmptyURLNoop(t *testing.T) {
+	t.Setenv("RECONCILIATION_URL", "")
+	c := NewReconClient(nil)
+	if err := c.PublishExecution(context.Background(), ExecutionRecord{}); err != nil {
+		t.Fatalf("publish should be no-op: %v", err)
+	}
+	if err := c.PublishObligation(context.Background(), domain.SettlementObligation{Currency: "EUR", At: time.Now().UTC()}); err != nil {
+		t.Fatalf("publish should be no-op: %v", err)
+	}
+}
+
+func TestAuditClientCancelledContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("AUDIT_EVENT_LOG_URL", srv.URL)
+	c := NewAuditClient(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := c.Emit(ctx, AuditPayload{EventType: "x", At: time.Now().UTC().Format(time.RFC3339)}, "e1", "")
+	if err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
+}
+
+func TestReconClientCancelledContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("RECONCILIATION_URL", srv.URL)
+	c := NewReconClient(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := c.PublishExecution(ctx, ExecutionRecord{HedgeID: "h1", ExecutedAt: time.Now().UTC().Format(time.RFC3339)})
+	if err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
+}
+
+func TestReconClientRetryThenSucceed(t *testing.T) {
+	srv := newServer(t, http.StatusOK, 2, nil)
+	defer srv.Close()
+	t.Setenv("RECONCILIATION_URL", srv.URL)
+	c := NewReconClient(nil)
+	if err := c.PublishExecution(context.Background(), ExecutionRecord{HedgeID: "h1", ExecutedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+}

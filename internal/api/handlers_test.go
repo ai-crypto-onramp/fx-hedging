@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ai-crypto-onramp/fx-hedging/internal/audit"
+	"github.com/ai-crypto-onramp/fx-hedging/internal/clients"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/exposure"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/policy"
@@ -683,5 +685,148 @@ func TestListExposures(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if len(out.Exposures) != 2 {
 		t.Fatalf("exposures=%d want 2", len(out.Exposures))
+	}
+}
+
+func TestListExposuresEmpty(t *testing.T) {
+	svc, _, _, _ := newTestService(t, nil)
+	mux := NewMux(svc)
+	rec := doJSON(t, mux, http.MethodGet, "/v1/exposures", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	var out struct {
+		Exposures []*domain.Exposure `json:"exposures"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out.Exposures == nil {
+		t.Fatal("expected non-nil exposures array for empty tracker")
+	}
+	if len(out.Exposures) != 0 {
+		t.Fatalf("expected 0 exposures, got %d", len(out.Exposures))
+	}
+}
+
+func TestAbsFloat(t *testing.T) {
+	if absFloat(-3.5) != 3.5 {
+		t.Fatalf("absFloat(-3.5) = %v", absFloat(-3.5))
+	}
+	if absFloat(3.5) != 3.5 {
+		t.Fatalf("absFloat(3.5) = %v", absFloat(3.5))
+	}
+}
+
+func TestEmitForwardsToAuditClient(t *testing.T) {
+	// Configure a downstream audit-event-log via env so NewAuditClient posts.
+	var gotType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p clients.AuditPayload
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		gotType = p.EventType
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("AUDIT_EVENT_LOG_URL", srv.URL)
+
+	svc, _, _, _ := newTestService(t, nil)
+	svc.AuditC = clients.NewAuditClient(nil)
+	mux := NewMux(svc)
+	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": 100})
+	if gotType != string(audit.EventExposureAdded) {
+		t.Fatalf("downstream event_type = %q, want %q", gotType, audit.EventExposureAdded)
+	}
+}
+
+func TestPublishExecutionToRecon(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("RECONCILIATION_URL", srv.URL)
+
+	svc, _, _, tr := newTestService(t, nil)
+	svc.ReconC = clients.NewReconClient(nil)
+	tr.AddExposure("EUR", 100_000)
+	mux := NewMux(svc)
+	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "SPOT", "type": "SPOT"})
+	if r.Code != http.StatusCreated {
+		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
+	}
+	if gotPath != "/v1/executions" {
+		t.Fatalf("recon path = %q, want /v1/executions", gotPath)
+	}
+}
+
+func TestSettlementPublishesObligationsToRecon(t *testing.T) {
+	var paths []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("RECONCILIATION_URL", srv.URL)
+
+	svc, _, _, _ := newTestService(t, nil)
+	svc.ReconC = clients.NewReconClient(nil)
+	mux := NewMux(svc)
+	_ = doJSON(t, mux, http.MethodPost, "/v1/exposure/EUR", map[string]interface{}{"amount": 100_000})
+	_ = doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "SPOT", "type": "SPOT"})
+	r := doJSON(t, mux, http.MethodGet, "/v1/settlement", nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, p := range paths {
+		if p == "/v1/settlement-obligations" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected /v1/settlement-obligations POST, paths = %v", paths)
+	}
+}
+
+func TestCreateHedgeCapBreachAudit(t *testing.T) {
+	svc, rec, _, tr := newTestService(t, nil)
+	svc.Policy.MaxOpenExposureUSD = 10_000
+	tr.AddExposure("EUR", 1_000_000) // open already >> cap
+	mux := NewMux(svc)
+	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 50_000, "tenor": "SPOT", "type": "SPOT"})
+	if r.Code != http.StatusCreated {
+		t.Fatalf("code = %d, body=%s", r.Code, r.Body.String())
+	}
+	found := false
+	for _, e := range rec.Events() {
+		if e.Type == audit.EventCapBreach {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected cap_breach audit event when hedge created while cap breached")
+	}
+}
+
+func TestProcessFillsSkipsDuplicate(t *testing.T) {
+	svc, _, st, _ := newTestService(t, nil)
+	// Pre-record a fill with a known venue trade id; the dummy provider will
+	// produce a different id, so directly exercise processFills via a duplicate.
+	h := &domain.Hedge{ID: "h-dup", Currency: "EUR", Notional: 100, QuotedRate: 1.10, Status: domain.StatusExecuting}
+	st.CreateHedge(h)
+	dupFill := domain.Fill{HedgeID: "h-dup", Venue: "bank", VenueTradeID: "vt-dup", Price: 1.11, Amount: 100, Timestamp: time.Now().UTC()}
+	_, _ = st.UpdateHedge("h-dup", func(stored *domain.Hedge) error {
+		stored.Fills = append(stored.Fills, dupFill)
+		return nil
+	})
+	// processFills should skip the duplicate fill (HasFill true).
+	slippage, pnl, execNotional := svc.processFills(h, []domain.Fill{dupFill})
+	if slippage != 0 || pnl != 0 || execNotional != 0 {
+		t.Fatalf("duplicate fill should be skipped: slip=%v pnl=%v notional=%v", slippage, pnl, execNotional)
 	}
 }

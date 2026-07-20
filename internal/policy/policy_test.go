@@ -171,3 +171,71 @@ func TestParseOverridesEnv(t *testing.T) {
 		t.Fatalf("BRL cap = %v, want 100000", p.EffectiveCap("BRL"))
 	}
 }
+
+func TestSetOverride(t *testing.T) {
+	p := &Policy{HedgeRatioTarget: 0.90, MaxOpenExposureUSD: 1_000_000, Overrides: map[string]Override{}}
+	p.SetOverride("eur", Override{Ratio: 0.75, CapUSD: 50_000})
+	if r := p.EffectiveRatio("EUR"); r != 0.75 {
+		t.Fatalf("EUR ratio = %v, want 0.75", r)
+	}
+	if c := p.EffectiveCap("EUR"); c != 50_000 {
+		t.Fatalf("EUR cap = %v, want 50000", c)
+	}
+}
+
+func TestSetOverrideNilMap(t *testing.T) {
+	p := &Policy{HedgeRatioTarget: 0.90, MaxOpenExposureUSD: 1_000_000}
+	p.SetOverride("TRY", Override{Ratio: 1.0, CapUSD: 25_000})
+	if r := p.EffectiveRatio("TRY"); r != 1.0 {
+		t.Fatalf("TRY ratio = %v", r)
+	}
+}
+
+func TestNewEnvParsing(t *testing.T) {
+	t.Setenv("HEDGE_RATIO_TARGET", "0.5")
+	t.Setenv("MAX_OPEN_EXPOSURE_USD", "250000")
+	t.Setenv("SLIPPAGE_ALERT_BPS", "12")
+	p := New()
+	if p.HedgeRatioTarget != 0.5 {
+		t.Fatalf("ratio = %v", p.HedgeRatioTarget)
+	}
+	if p.MaxOpenExposureUSD != 250_000 {
+		t.Fatalf("cap = %v", p.MaxOpenExposureUSD)
+	}
+	if p.SlippageAlertBPS != 12 {
+		t.Fatalf("alert = %v", p.SlippageAlertBPS)
+	}
+}
+
+func TestNewEnvInvalidValues(t *testing.T) {
+	t.Setenv("HEDGE_RATIO_TARGET", "not-a-number")
+	t.Setenv("MAX_OPEN_EXPOSURE_USD", "-1")
+	t.Setenv("SLIPPAGE_ALERT_BPS", "bad")
+	p := New()
+	if p.HedgeRatioTarget != 0.90 {
+		t.Fatalf("ratio = %v, want default 0.90", p.HedgeRatioTarget)
+	}
+	if p.MaxOpenExposureUSD != 1_000_000 {
+		t.Fatalf("cap = %v, want default 1M", p.MaxOpenExposureUSD)
+	}
+	if p.SlippageAlertBPS != 5 {
+		t.Fatalf("alert = %v, want default 5", p.SlippageAlertBPS)
+	}
+}
+
+func TestEffectiveRatioClamped(t *testing.T) {
+	p := &Policy{HedgeRatioTarget: 0.90, MaxOpenExposureUSD: 1_000_000, SlippageAlertBPS: 5, WideningStep: 0.5}
+	p.ApplySlippageTuning("EUR", 100)
+	if r := p.EffectiveRatio("EUR"); r != 1.0 {
+		t.Fatalf("clamped ratio = %v, want 1.0", r)
+	}
+}
+
+func TestBreachUsesOpenAmountWhenSet(t *testing.T) {
+	p := &Policy{HedgeRatioTarget: 0.90, MaxOpenExposureUSD: 100_000}
+	// NetAmount and HedgeCoverage would imply small open, but OpenAmount is
+	// honored when non-zero.
+	if !p.Breach("EUR", &domain.Exposure{Currency: "EUR", NetAmount: 100, HedgeCoverage: 0, OpenAmount: 500_000}) {
+		t.Fatal("expected breach using explicit OpenAmount")
+	}
+}

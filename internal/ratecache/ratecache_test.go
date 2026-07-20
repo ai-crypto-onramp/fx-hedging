@@ -81,3 +81,35 @@ func TestRevaluationRateUnset(t *testing.T) {
 		t.Fatal("expected false with no reval rate")
 	}
 }
+
+func TestCacheTTLZeroNeverExpires(t *testing.T) {
+	c := New(0)
+	c.Update("EUR", 1.10, "bank")
+	time.Sleep(20 * time.Millisecond)
+	if _, err := c.Get("EUR"); err != nil {
+		t.Fatalf("zero TTL should never expire: %v", err)
+	}
+}
+
+func TestCacheTTLReturnsConfigured(t *testing.T) {
+	c := New(123 * time.Millisecond)
+	if got := c.TTL(); got != 123*time.Millisecond {
+		t.Fatalf("TTL = %v, want 123ms", got)
+	}
+}
+
+func TestRevaluationRateSet(t *testing.T) {
+	c := New(time.Second)
+	c.SetRevaluationRate("EUR", 1.10)
+	if r := c.RevaluationRate("EUR"); r != 1.10 {
+		t.Fatalf("reval rate = %v, want 1.10", r)
+	}
+}
+
+func TestCrossCheckMissingLiveRate(t *testing.T) {
+	c := New(time.Second)
+	c.SetRevaluationRate("EUR", 1.10)
+	if c.CrossCheck("EUR", 100) {
+		t.Fatal("expected false when live rate missing")
+	}
+}

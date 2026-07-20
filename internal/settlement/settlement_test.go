@@ -94,3 +94,38 @@ func TestNetIgnoresNonExecutedHedges(t *testing.T) {
 		t.Fatalf("expected 100k net (failed hedge ignored), got %v", ob)
 	}
 }
+
+func TestNetFromFlowsSkipsZeroNetFlows(t *testing.T) {
+	e := New()
+	flows := []domain.Exposure{
+		{Currency: "EUR", NetAmount: 0, UpdatedAt: time.UnixMilli(100)},
+		{Currency: "JPY", NetAmount: -30_000, UpdatedAt: time.UnixMilli(100)},
+	}
+	ob := e.NetFromFlowsAndHedges(flows, nil)
+	if len(ob) != 1 || ob[0].Currency != "JPY" {
+		t.Fatalf("expected only JPY obligation, got %v", ob)
+	}
+}
+
+func TestNetUsesLatestAt(t *testing.T) {
+	e := New()
+	legs := []Leg{
+		{Currency: "EUR", Amount: 100, Source: "flow", At: time.UnixMilli(500)},
+		{Currency: "EUR", Amount: 50, Source: "hedge", At: time.UnixMilli(900)},
+	}
+	ob := e.Net(legs)
+	if len(ob) != 1 {
+		t.Fatalf("len = %d", len(ob))
+	}
+	if ob[0].At.UnixMilli() != 900 {
+		t.Fatalf("At = %v, want 900", ob[0].At.UnixMilli())
+	}
+}
+
+func TestNetEmpty(t *testing.T) {
+	e := New()
+	ob := e.Net(nil)
+	if len(ob) != 0 {
+		t.Fatalf("expected 0 obligations, got %d", len(ob))
+	}
+}

@@ -104,3 +104,43 @@ func TestSamplesReturnsCopy(t *testing.T) {
 		t.Fatal("Samples should return a copy")
 	}
 }
+
+func TestNewDummyEnvConfig(t *testing.T) {
+	t.Setenv("DUMMY_FX_RATE", "2.5")
+	t.Setenv("DUMMY_FX_SLIPPAGE_BPS", "7")
+	t.Setenv("DUMMY_FX_FAIL", "1")
+	d := NewDummy()
+	if d.Rate != 2.5 {
+		t.Fatalf("rate = %v, want 2.5", d.Rate)
+	}
+	if d.SlippageBPS != 7 {
+		t.Fatalf("slippage = %v, want 7", d.SlippageBPS)
+	}
+	if !d.FailExecute {
+		t.Fatal("FailExecute should be true when DUMMY_FX_FAIL=1")
+	}
+}
+
+func TestNewDummyEnvInvalidValues(t *testing.T) {
+	t.Setenv("DUMMY_FX_RATE", "not-a-number")
+	t.Setenv("DUMMY_FX_SLIPPAGE_BPS", "bad")
+	t.Setenv("DUMMY_FX_FAIL", "")
+	d := NewDummy()
+	if d.Rate != 1.10 {
+		t.Fatalf("rate = %v, want default 1.10", d.Rate)
+	}
+	if d.SlippageBPS != 0 {
+		t.Fatalf("slippage = %v, want 0", d.SlippageBPS)
+	}
+	if d.FailExecute {
+		t.Fatal("FailExecute should be false by default")
+	}
+}
+
+func TestNewDummyEnvNegativeRate(t *testing.T) {
+	t.Setenv("DUMMY_FX_RATE", "-1.0")
+	d := NewDummy()
+	if d.Rate != 1.10 {
+		t.Fatalf("negative rate should fall back to default; got %v", d.Rate)
+	}
+}

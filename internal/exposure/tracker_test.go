@@ -195,3 +195,64 @@ func TestSnapshotterPersistsOnTick(t *testing.T) {
 		t.Fatalf("expected at least 2 snapshots (change + tick), got %d", sink.count())
 	}
 }
+
+func TestSnapshotterStop(t *testing.T) {
+	tr := New()
+	sink := &captureSink{}
+	snap := NewSnapshotter(tr, sink, 10*time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	go snap.Run(ctx)
+	// Stop the snapshotter: it should drain and return. We must cancel the
+	// context to unblock Run, then Stop waits for stoppedCh to close.
+	cancel()
+	snap.Stop()
+	// Stop is idempotent.
+	snap.Stop()
+}
+
+func TestSnapshotterDefaultInterval(t *testing.T) {
+	tr := New()
+	sink := &captureSink{}
+	snap := NewSnapshotter(tr, sink, 0)
+	if snap.interval != time.Second {
+		t.Fatalf("interval = %v, want 1s default", snap.interval)
+	}
+}
+
+func TestSubscribeUnsubscribe(t *testing.T) {
+	tr := New()
+	ch := make(chan *domain.Exposure, 1)
+	tr.Subscribe(ch)
+	tr.AddExposure("EUR", 100)
+	select {
+	case e := <-ch:
+		if e.Currency != "EUR" {
+			t.Fatalf("currency = %q", e.Currency)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected snapshot on subscribed channel")
+	}
+	tr.Unsubscribe(ch)
+	tr.AddExposure("EUR", 100)
+	select {
+	case <-ch:
+		t.Fatal("should not receive after Unsubscribe")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestGetExposureUpdatedZeroFallback(t *testing.T) {
+	tr := New()
+	// Directly manipulate to simulate a missing updatedAt entry.
+	tr.mu.Lock()
+	tr.net["EUR"] = 100
+	tr.updatedAt["EUR"] = time.Time{}
+	tr.mu.Unlock()
+	got := tr.GetExposure("EUR")
+	if got == nil {
+		t.Fatal("expected exposure")
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatal("UpdatedAt should fall back to now() when zero")
+	}
+}
