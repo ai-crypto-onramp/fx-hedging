@@ -16,11 +16,13 @@ import (
 	"github.com/ai-crypto-onramp/fx-hedging/internal/executor"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/exposure"
 	grpcserver "github.com/ai-crypto-onramp/fx-hedging/internal/grpc"
+	"github.com/ai-crypto-onramp/fx-hedging/internal/otel"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/policy"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/provider"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/ratecache"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store/postgres"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func main() {
@@ -30,6 +32,12 @@ func main() {
 // run starts the REST and gRPC servers and blocks until a signal is
 // received or a server fails.
 func run() error {
+	shutdown, err := otel.Init("fx-hedging")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -73,7 +81,7 @@ func run() error {
 	}
 
 	// REST server.
-	httpSrv := &http.Server{Addr: ":" + port, Handler: api.NewMux(svc)}
+	httpSrv := &http.Server{Addr: ":" + port, Handler: otelhttp.NewHandler(api.NewMux(svc), "fx-hedging")}
 	go func() {
 		log.Printf("rest: listening on :%s", port)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
