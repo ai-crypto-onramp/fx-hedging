@@ -1,11 +1,12 @@
 package policy
 
 import (
-	"math"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/shopspring/decimal"
 
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
@@ -156,12 +157,12 @@ func (p *Policy) ApplySlippageTuning(currency string, meanSlippageBPS float64) {
 // target, no hedge is needed. If the open amount exceeds the cap, hedge the
 // full open amount to bring it back under the cap. The notional returned is
 // non-negative and zero when no hedge is required.
-func (p *Policy) ShouldHedge(currency string, exp *domain.Exposure) (bool, float64) {
+func (p *Policy) ShouldHedge(currency string, exp *domain.Exposure) (bool, decimal.Decimal) {
 	dec := p.Decide(currency, exp)
-	if dec.BlockedByCap || dec.Notional > 0 {
-		return dec.Notional > 0, dec.Notional
+	if dec.BlockedByCap || dec.Notional.GreaterThan(decimal.Zero) {
+		return dec.Notional.GreaterThan(decimal.Zero), dec.Notional
 	}
-	return false, 0
+	return false, decimal.Zero
 }
 
 // Decide returns a full HedgeDecision for the given currency and exposure,
@@ -178,35 +179,35 @@ func (p *Policy) Decide(currency string, exp *domain.Exposure) domain.HedgeDecis
 	}
 	net := exp.NetAmount
 	coverage := exp.HedgeCoverage
-	open := net - coverage
+	open := net.Sub(coverage)
 
-	if math.Abs(net) < 1e-9 {
+	if net.IsZero() {
 		return domain.HedgeDecision{Currency: currency, TenorHint: domain.TenorSpot}
 	}
 
 	ratio := p.EffectiveRatio(currency)
 	cap := p.EffectiveCap(currency)
 
-	targetCoverage := net * ratio
-	needed := targetCoverage - coverage
-	if net > 0 {
-		if needed <= 0 {
-			needed = 0
+	targetCoverage := net.Mul(decimal.NewFromFloat(ratio))
+	needed := targetCoverage.Sub(coverage)
+	if net.GreaterThan(decimal.Zero) {
+		if needed.LessThanOrEqual(decimal.Zero) {
+			needed = decimal.Zero
 		}
 	} else {
-		if needed >= 0 {
-			needed = 0
+		if needed.GreaterThanOrEqual(decimal.Zero) {
+			needed = decimal.Zero
 		}
 	}
 
-	absOpen := math.Abs(open)
-	breached := absOpen > cap
+	absOpen := open.Abs()
+	breached := absOpen.GreaterThan(decimal.NewFromFloat(cap))
 	if breached {
 		needed = open
 	}
 
-	notional := math.Abs(needed)
-	if notional < 1e-9 {
+	notional := needed.Abs()
+	if notional.LessThan(decimal.NewFromFloat(1e-9)) {
 		return domain.HedgeDecision{Currency: currency, TenorHint: domain.TenorSpot, BlockedByCap: breached, Reason: "no hedge needed"}
 	}
 	reason := ""
@@ -230,9 +231,9 @@ func (p *Policy) Breach(currency string, exp *domain.Exposure) bool {
 		return false
 	}
 	cap := p.EffectiveCap(currency)
-	open := exp.NetAmount - exp.HedgeCoverage
-	if exp.OpenAmount != 0 {
+	open := exp.NetAmount.Sub(exp.HedgeCoverage)
+	if !exp.OpenAmount.IsZero() {
 		open = exp.OpenAmount
 	}
-	return math.Abs(open) > cap
+	return open.Abs().GreaterThan(decimal.NewFromFloat(cap))
 }

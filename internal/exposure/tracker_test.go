@@ -6,8 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
+
+func dInt(n int64) decimal.Decimal { return decimal.NewFromInt(n) }
 
 func TestGetExposureMissing(t *testing.T) {
 	tr := New()
@@ -18,20 +22,20 @@ func TestGetExposureMissing(t *testing.T) {
 
 func TestAddExposureLongShort(t *testing.T) {
 	tr := New()
-	tr.AddExposure("EUR", 100_000)
-	tr.AddExposure("EUR", -30_000)
+	tr.AddExposure("EUR", dInt(100_000))
+	tr.AddExposure("EUR", dInt(-30_000))
 
 	got := tr.GetExposure("EUR")
 	if got == nil {
 		t.Fatal("expected exposure")
 	}
-	if got.NetAmount != 70_000 {
+	if !got.NetAmount.Equal(dInt(70_000)) {
 		t.Fatalf("net = %v, want 70000", got.NetAmount)
 	}
-	if got.HedgeCoverage != 0 {
+	if !got.HedgeCoverage.IsZero() {
 		t.Fatalf("coverage = %v, want 0", got.HedgeCoverage)
 	}
-	if got.OpenAmount != 70_000 {
+	if !got.OpenAmount.Equal(dInt(70_000)) {
 		t.Fatalf("open = %v, want 70000", got.OpenAmount)
 	}
 	if got.UpdatedAt.IsZero() {
@@ -41,35 +45,35 @@ func TestAddExposureLongShort(t *testing.T) {
 
 func TestCoverageReducesOpen(t *testing.T) {
 	tr := New()
-	tr.AddExposure("EUR", 100_000)
-	tr.AddCoverage("EUR", 90_000)
+	tr.AddExposure("EUR", dInt(100_000))
+	tr.AddCoverage("EUR", dInt(90_000))
 
 	got := tr.GetExposure("EUR")
-	if got.HedgeCoverage != 90_000 {
+	if !got.HedgeCoverage.Equal(dInt(90_000)) {
 		t.Fatalf("coverage = %v, want 90000", got.HedgeCoverage)
 	}
-	if got.OpenAmount != 10_000 {
+	if !got.OpenAmount.Equal(dInt(10_000)) {
 		t.Fatalf("open = %v, want 10000", got.OpenAmount)
 	}
 }
 
 func TestShortExposure(t *testing.T) {
 	tr := New()
-	tr.AddExposure("JPY", -50_000)
+	tr.AddExposure("JPY", dInt(-50_000))
 	got := tr.GetExposure("JPY")
-	if got.NetAmount != -50_000 {
+	if !got.NetAmount.Equal(dInt(-50_000)) {
 		t.Fatalf("net = %v, want -50000", got.NetAmount)
 	}
-	if got.OpenAmount != -50_000 {
+	if !got.OpenAmount.Equal(dInt(-50_000)) {
 		t.Fatalf("open = %v, want -50000", got.OpenAmount)
 	}
 }
 
 func TestAllExposures(t *testing.T) {
 	tr := New()
-	tr.AddExposure("EUR", 100_000)
-	tr.AddExposure("JPY", -50_000)
-	tr.AddCoverage("GBP", 10_000) // coverage only currency
+	tr.AddExposure("EUR", dInt(100_000))
+	tr.AddExposure("JPY", dInt(-50_000))
+	tr.AddCoverage("GBP", dInt(10_000)) // coverage only currency
 
 	all := tr.AllExposures()
 	seen := make(map[string]*domain.Exposure)
@@ -85,7 +89,7 @@ func TestAllExposures(t *testing.T) {
 	if _, ok := seen["GBP"]; !ok {
 		t.Fatal("GBP missing (coverage only)")
 	}
-	if seen["EUR"].OpenAmount != 100_000 {
+	if !seen["EUR"].OpenAmount.Equal(dInt(100_000)) {
 		t.Fatalf("EUR open = %v, want 100000", seen["EUR"].OpenAmount)
 	}
 }
@@ -97,25 +101,25 @@ func TestTrackerConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			tr.AddExposure("EUR", float64(n))
+			tr.AddExposure("EUR", dInt(int64(n)))
 			_ = tr.GetExposure("EUR")
 		}(i)
 	}
 	wg.Wait()
 
 	got := tr.GetExposure("EUR")
-	wantSum := 0.0
+	wantSum := decimal.Zero
 	for i := 0; i < 50; i++ {
-		wantSum += float64(i)
+		wantSum = wantSum.Add(dInt(int64(i)))
 	}
-	if got.NetAmount != wantSum {
+	if !got.NetAmount.Equal(wantSum) {
 		t.Fatalf("net = %v, want %v", got.NetAmount, wantSum)
 	}
 }
 
 func TestAddEventIdempotent(t *testing.T) {
 	tr := New()
-	ev := domain.ExposureEvent{EventID: "e1", Currency: "EUR", Amount: 100_000}
+	ev := domain.ExposureEvent{EventID: "e1", Currency: "EUR", Amount: dInt(100_000)}
 	if !tr.AddEvent(ev) {
 		t.Fatal("first AddEvent should apply")
 	}
@@ -123,7 +127,7 @@ func TestAddEventIdempotent(t *testing.T) {
 		t.Fatal("duplicate AddEvent should not apply")
 	}
 	got := tr.GetExposure("EUR")
-	if got.NetAmount != 100_000 {
+	if !got.NetAmount.Equal(dInt(100_000)) {
 		t.Fatalf("net = %v, want 100000 (no double count)", got.NetAmount)
 	}
 	if !tr.Seen("e1") {
@@ -136,19 +140,19 @@ func TestAddEventIdempotent(t *testing.T) {
 
 func TestAddEventEmptyIDAlwaysApplied(t *testing.T) {
 	tr := New()
-	if !tr.AddEvent(domain.ExposureEvent{Currency: "EUR", Amount: 50}) {
+	if !tr.AddEvent(domain.ExposureEvent{Currency: "EUR", Amount: dInt(50)}) {
 		t.Fatal("empty id should apply")
 	}
-	if !tr.AddEvent(domain.ExposureEvent{Currency: "EUR", Amount: 50}) {
+	if !tr.AddEvent(domain.ExposureEvent{Currency: "EUR", Amount: dInt(50)}) {
 		t.Fatal("empty id should apply again (no guard)")
 	}
-	if got := tr.GetExposure("EUR"); got.NetAmount != 100 {
+	if got := tr.GetExposure("EUR"); !got.NetAmount.Equal(dInt(100)) {
 		t.Fatalf("net = %v, want 100", got.NetAmount)
 	}
 }
 
 type captureSink struct {
-	mu   sync.Mutex
+	mu    sync.Mutex
 	snaps []*domain.Exposure
 }
 
@@ -172,7 +176,7 @@ func TestSnapshotterPersistsOnChange(t *testing.T) {
 	defer cancel()
 	go snap.Run(ctx)
 
-	tr.AddExposure("EUR", 100_000)
+	tr.AddExposure("EUR", dInt(100_000))
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 	if sink.count() < 1 {
@@ -188,7 +192,7 @@ func TestSnapshotterPersistsOnTick(t *testing.T) {
 	defer cancel()
 	go snap.Run(ctx)
 
-	tr.AddExposure("EUR", 100)
+	tr.AddExposure("EUR", dInt(100))
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	if sink.count() < 2 {
@@ -223,7 +227,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 	tr := New()
 	ch := make(chan *domain.Exposure, 1)
 	tr.Subscribe(ch)
-	tr.AddExposure("EUR", 100)
+	tr.AddExposure("EUR", dInt(100))
 	select {
 	case e := <-ch:
 		if e.Currency != "EUR" {
@@ -233,7 +237,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 		t.Fatal("expected snapshot on subscribed channel")
 	}
 	tr.Unsubscribe(ch)
-	tr.AddExposure("EUR", 100)
+	tr.AddExposure("EUR", dInt(100))
 	select {
 	case <-ch:
 		t.Fatal("should not receive after Unsubscribe")
@@ -245,7 +249,7 @@ func TestGetExposureUpdatedZeroFallback(t *testing.T) {
 	tr := New()
 	// Directly manipulate to simulate a missing updatedAt entry.
 	tr.mu.Lock()
-	tr.net["EUR"] = 100
+	tr.net["EUR"] = dInt(100)
 	tr.updatedAt["EUR"] = time.Time{}
 	tr.mu.Unlock()
 	got := tr.GetExposure("EUR")

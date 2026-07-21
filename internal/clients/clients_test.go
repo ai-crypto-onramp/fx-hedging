@@ -11,8 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
+
+func dInt(n int64) decimal.Decimal     { return decimal.NewFromInt(n) }
+func dFloat(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
 
 func newServer(t *testing.T, status int, failFirst int, handler func(body []byte, headers http.Header)) *httptest.Server {
 	t.Helper()
@@ -126,7 +131,7 @@ func TestReconClientPublishExecution(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("RECONCILIATION_URL", srv.URL)
 	c := NewReconClient(nil)
-	rec := ExecutionRecord{HedgeID: "h1", Currency: "EUR", Venue: "bank", VenueTradeID: "vt-1", Notional: 100, FillPrice: 1.1, QuotedPrice: 1.1, SlippageBPS: 0, ExecutedAt: time.Now().UTC().Format(time.RFC3339)}
+	rec := ExecutionRecord{HedgeID: "h1", Currency: "EUR", Venue: "bank", VenueTradeID: "vt-1", Notional: dInt(100), FillPrice: dFloat(1.1), QuotedPrice: dFloat(1.1), SlippageBPS: 0, ExecutedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := c.PublishExecution(context.Background(), rec); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -146,11 +151,11 @@ func TestReconClientPublishObligation(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("RECONCILIATION_URL", srv.URL)
 	c := NewReconClient(nil)
-	ob := domain.SettlementObligation{Currency: "EUR", Amount: 10_000, Legs: 2, At: time.Now().UTC()}
+	ob := domain.SettlementObligation{Currency: "EUR", Amount: dInt(10_000), Legs: 2, At: time.Now().UTC()}
 	if err := c.PublishObligation(context.Background(), ob); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if got.Currency != "EUR" || got.Amount != 10_000 {
+	if got.Currency != "EUR" || !got.Amount.Equal(dInt(10_000)) {
 		t.Fatalf("got = %+v", got)
 	}
 }

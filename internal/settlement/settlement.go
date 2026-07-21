@@ -7,6 +7,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
 
@@ -14,7 +16,7 @@ import (
 // Amount means the service receives that currency; negative means it pays.
 type Leg struct {
 	Currency string
-	Amount   float64
+	Amount   decimal.Decimal
 	Source   string // "flow" or "hedge"
 	At       time.Time
 }
@@ -31,22 +33,20 @@ func New() *Engine { return &Engine{} }
 // zero are dropped (fully offset). The returned obligations are sorted by
 // currency code for deterministic output.
 func (e *Engine) Net(legs []Leg) []domain.SettlementObligation {
-	byCcy := map[string]float64{}
+	byCcy := map[string]decimal.Decimal{}
 	countByCcy := map[string]int{}
 	latestByCcy := map[string]time.Time{}
 	for _, l := range legs {
-		byCcy[l.Currency] += l.Amount
+		byCcy[l.Currency] = byCcy[l.Currency].Add(l.Amount)
 		countByCcy[l.Currency]++
 		if l.At.After(latestByCcy[l.Currency]) {
 			latestByCcy[l.Currency] = l.At
 		}
 	}
+	epsilon := decimal.NewFromFloat(1e-9)
 	out := make([]domain.SettlementObligation, 0, len(byCcy))
 	for ccy, amt := range byCcy {
-		if amt < 0 {
-			amt = -amt
-		}
-		if amt < 1e-9 {
+		if amt.Abs().LessThan(epsilon) {
 			continue
 		}
 		out = append(out, domain.SettlementObligation{
@@ -70,7 +70,7 @@ func (e *Engine) Net(legs []Leg) []domain.SettlementObligation {
 func (e *Engine) NetFromFlowsAndHedges(flows []domain.Exposure, hedges []*domain.Hedge) []domain.SettlementObligation {
 	legs := make([]Leg, 0, len(flows)+len(hedges))
 	for _, f := range flows {
-		if f.NetAmount == 0 {
+		if f.NetAmount.IsZero() {
 			continue
 		}
 		legs = append(legs, Leg{Currency: f.Currency, Amount: f.NetAmount, Source: "flow", At: f.UpdatedAt})
@@ -82,7 +82,7 @@ func (e *Engine) NetFromFlowsAndHedges(flows []domain.Exposure, hedges []*domain
 		// Hedge settlement is the opposite leg of the exposure: a hedge
 		// that neutralizes a long exposure pays out the notional in the
 		// exposure currency on settlement.
-		amt := -h.Notional
+		amt := h.Notional.Neg()
 		legs = append(legs, Leg{Currency: h.Currency, Amount: amt, Source: "hedge", At: h.UpdatedAt})
 	}
 	return e.Net(legs)

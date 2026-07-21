@@ -4,6 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
 
@@ -17,8 +19,8 @@ import (
 // exposure snapshot produced by an update.
 type Tracker struct {
 	mu        sync.RWMutex
-	net       map[string]float64
-	coverage  map[string]float64
+	net       map[string]decimal.Decimal
+	coverage  map[string]decimal.Decimal
 	updatedAt map[string]time.Time
 	seen      map[string]struct{}
 	subs      map[chan *domain.Exposure]struct{}
@@ -27,8 +29,8 @@ type Tracker struct {
 // New returns an empty in-memory exposure tracker.
 func New() *Tracker {
 	return &Tracker{
-		net:       make(map[string]float64),
-		coverage:  make(map[string]float64),
+		net:       make(map[string]decimal.Decimal),
+		coverage:  make(map[string]decimal.Decimal),
 		updatedAt: make(map[string]time.Time),
 		seen:      make(map[string]struct{}),
 		subs:      make(map[chan *domain.Exposure]struct{}),
@@ -38,7 +40,7 @@ func New() *Tracker {
 // AddExposure applies a signed delta to the net exposure for currency.
 // Positive amounts increase a long position; negative amounts decrease it
 // or create a short position.
-func (t *Tracker) AddExposure(currency string, amount float64) {
+func (t *Tracker) AddExposure(currency string, amount decimal.Decimal) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.applyDelta(currency, amount)
@@ -63,8 +65,8 @@ func (t *Tracker) AddEvent(e domain.ExposureEvent) (applied bool) {
 
 // applyDelta mutates net/updatedAt and notifies subscribers. Caller holds
 // the write lock.
-func (t *Tracker) applyDelta(currency string, amount float64) {
-	t.net[currency] += amount
+func (t *Tracker) applyDelta(currency string, amount decimal.Decimal) {
+	t.net[currency] = t.net[currency].Add(amount)
 	if t.updatedAt == nil {
 		t.updatedAt = map[string]time.Time{}
 	}
@@ -80,10 +82,10 @@ func (t *Tracker) applyDelta(currency string, amount float64) {
 
 // AddCoverage applies a signed delta to the hedge coverage for currency.
 // Executed hedges add coverage; failed/cancelled hedges should not.
-func (t *Tracker) AddCoverage(currency string, amount float64) {
+func (t *Tracker) AddCoverage(currency string, amount decimal.Decimal) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.coverage[currency] += amount
+	t.coverage[currency] = t.coverage[currency].Add(amount)
 	t.updatedAt[currency] = time.Now().UTC()
 	snap := t.snapshotLocked(currency)
 	for ch := range t.subs {
@@ -129,7 +131,7 @@ func (t *Tracker) GetExposure(currency string) *domain.Exposure {
 		return nil
 	}
 	coverage := t.coverage[currency]
-	open := net - coverage
+	open := net.Sub(coverage)
 	updated := t.updatedAt[currency]
 	if updated.IsZero() {
 		updated = time.Now().UTC()
@@ -152,7 +154,7 @@ func (t *Tracker) AllExposures() []*domain.Exposure {
 	out := make([]*domain.Exposure, 0)
 	for ccy := range t.net {
 		seen[ccy] = struct{}{}
-		open := t.net[ccy] - t.coverage[ccy]
+		open := t.net[ccy].Sub(t.coverage[ccy])
 		out = append(out, &domain.Exposure{
 			Currency:      ccy,
 			NetAmount:     t.net[ccy],
@@ -170,7 +172,7 @@ func (t *Tracker) AllExposures() []*domain.Exposure {
 			Currency:      ccy,
 			NetAmount:     t.net[ccy],
 			HedgeCoverage: t.coverage[ccy],
-			OpenAmount:    t.net[ccy] - t.coverage[ccy],
+			OpenAmount:    t.net[ccy].Sub(t.coverage[ccy]),
 			UpdatedAt:     t.updatedAt[ccy],
 		})
 	}
@@ -187,7 +189,7 @@ func (t *Tracker) snapshotLocked(currency string) *domain.Exposure {
 		Currency:      currency,
 		NetAmount:     t.net[currency],
 		HedgeCoverage: t.coverage[currency],
-		OpenAmount:    t.net[currency] - t.coverage[currency],
+		OpenAmount:    t.net[currency].Sub(t.coverage[currency]),
 		UpdatedAt:     updated,
 	}
 }

@@ -16,18 +16,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/google/uuid"
 )
 
 // Quote is a priced quote for hedging notional of a currency.
 type Quote struct {
-	Venue      string
-	Rate       float64
-	Liquidity  float64 // available notional at this rate
-	CostBPS    float64 // explicit cost in bps (commission/fee)
-	Tenor      string
-	ExpiresAt  time.Time
+	Venue     string
+	Rate      float64
+	Liquidity float64 // available notional at this rate
+	CostBPS   float64 // explicit cost in bps (commission/fee)
+	Tenor     string
+	ExpiresAt time.Time
 }
 
 // Executor is the common execution interface for bank FX APIs and external
@@ -129,8 +131,8 @@ func (b *BankAdapter) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fil
 }
 
 func (b *BankAdapter) liveSubmit(ctx context.Context, h *domain.Hedge) ([]domain.Fill, error) {
-	body := fmt.Sprintf(`{"currency":"%s","notional":%g,"tenor":"%s","type":"%s","client_request_id":"%s","quoted_rate":%g}`,
-		h.Currency, h.Notional, h.Tenor, h.Type, h.ClientRequestID, h.QuotedRate)
+	body := fmt.Sprintf(`{"currency":"%s","notional":%s,"tenor":"%s","type":"%s","client_request_id":"%s","quoted_rate":%s}`,
+		h.Currency, h.Notional.String(), h.Tenor, h.Type, h.ClientRequestID, h.QuotedRate.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.baseURL+"/v1/hedges", strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrSubmitFailed, err)
@@ -162,8 +164,8 @@ func (b *BankAdapter) liveSubmit(ctx context.Context, h *domain.Hedge) ([]domain
 		HedgeID:      h.ID,
 		Venue:        b.Name(),
 		VenueTradeID: out.VenueTradeID,
-		Price:        out.Price,
-		Amount:       out.Amount,
+		Price:        decimal.NewFromFloat(out.Price),  // precision boundary: external REST double → decimal
+		Amount:       decimal.NewFromFloat(out.Amount), // precision boundary: external REST double → decimal
 		Timestamp:    time.Now().UTC(),
 	}}, nil
 }
@@ -250,7 +252,7 @@ func (v *VenueAdapter) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fi
 	if v.baseURL == "" {
 		executed := h.QuotedRate
 		if v.slip != 0 {
-			executed = h.QuotedRate * (1 + v.slip/10_000.0)
+			executed = h.QuotedRate.Mul(decimal.NewFromFloat(1 + v.slip/10_000.0))
 		}
 		return []domain.Fill{{
 			HedgeID:      h.ID,
@@ -261,8 +263,8 @@ func (v *VenueAdapter) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fi
 			Timestamp:    time.Now().UTC(),
 		}}, nil
 	}
-	body := fmt.Sprintf(`{"pair":"%sUSD","amount":%g,"tenor":"%s","client_request_id":"%s"}`,
-		h.Currency, h.Notional, h.Tenor, h.ClientRequestID)
+	body := fmt.Sprintf(`{"pair":"%sUSD","amount":%s,"tenor":"%s","client_request_id":"%s"}`,
+		h.Currency, h.Notional.String(), h.Tenor, h.ClientRequestID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.baseURL+"/orders", strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrSubmitFailed, err)
@@ -294,8 +296,8 @@ func (v *VenueAdapter) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fi
 		HedgeID:      h.ID,
 		Venue:        v.Name(),
 		VenueTradeID: out.VenueTradeID,
-		Price:        out.Price,
-		Amount:       out.Amount,
+		Price:        decimal.NewFromFloat(out.Price),  // precision boundary: external REST double → decimal
+		Amount:       decimal.NewFromFloat(out.Amount), // precision boundary: external REST double → decimal
 		Timestamp:    time.Now().UTC(),
 	}}, nil
 }
@@ -401,13 +403,14 @@ func absDiff(x float64) float64 {
 // The hedge's QuotedRate is set to the best quote's rate before submit.
 // Each fill carries its venue and a unique venue trade id.
 func (r *Router) RouteAndExecute(ctx context.Context, h *domain.Hedge) ([]domain.Fill, error) {
-	q, ex, err := r.BestQuote(ctx, h.Currency, h.Notional, string(h.Tenor))
+	notionalF := h.Notional.InexactFloat64()
+	q, ex, err := r.BestQuote(ctx, h.Currency, notionalF, string(h.Tenor))
 	if err != nil {
 		return nil, err
 	}
-	h.QuotedRate = q.Rate
+	h.QuotedRate = decimal.NewFromFloat(q.Rate) // precision boundary: executor Quote.Rate (float64) → decimal
 
-	if q.Liquidity <= 0 || q.Liquidity >= h.Notional {
+	if q.Liquidity <= 0 || q.Liquidity >= notionalF {
 		fills, err := ex.Submit(ctx, h)
 		if err != nil {
 			return nil, err
@@ -429,9 +432,10 @@ func (r *Router) splitAndExecute(ctx context.Context, h *domain.Hedge) ([]domain
 		q  Quote
 		ex Executor
 	}
+	notionalF := h.Notional.InexactFloat64()
 	var lqs []legQuote
 	for _, ex := range r.executors {
-		q, err := ex.Quote(ctx, h.Currency, h.Notional, string(h.Tenor))
+		q, err := ex.Quote(ctx, h.Currency, notionalF, string(h.Tenor))
 		if err != nil {
 			continue
 		}
@@ -448,21 +452,22 @@ func (r *Router) splitAndExecute(ctx context.Context, h *domain.Hedge) ([]domain
 	}
 
 	remaining := h.Notional
+	epsilon := decimal.NewFromFloat(1e-9)
 	var fills []domain.Fill
 	for _, lq := range lqs {
-		if remaining <= 1e-9 {
+		if remaining.LessThanOrEqual(epsilon) {
 			break
 		}
-		alloc := lq.q.Liquidity
-		if alloc <= 0 {
+		alloc := decimal.NewFromFloat(lq.q.Liquidity)
+		if alloc.LessThanOrEqual(decimal.Zero) {
 			continue
 		}
-		if alloc > remaining {
+		if alloc.GreaterThan(remaining) {
 			alloc = remaining
 		}
 		leg := *h
 		leg.Notional = alloc
-		leg.QuotedRate = lq.q.Rate
+		leg.QuotedRate = decimal.NewFromFloat(lq.q.Rate) // precision boundary: executor Quote.Rate (float64) → decimal
 		legFills, err := lq.ex.Submit(ctx, &leg)
 		if err != nil {
 			continue
@@ -473,10 +478,10 @@ func (r *Router) splitAndExecute(ctx context.Context, h *domain.Hedge) ([]domain
 			}
 		}
 		fills = append(fills, legFills...)
-		remaining -= alloc
+		remaining = remaining.Sub(alloc)
 	}
-	if remaining > 1e-9 {
-		return fills, fmt.Errorf("executor: incomplete fill, %g remaining", remaining)
+	if remaining.GreaterThan(epsilon) {
+		return fills, fmt.Errorf("executor: incomplete fill, %s remaining", remaining.String())
 	}
 	return fills, nil
 }

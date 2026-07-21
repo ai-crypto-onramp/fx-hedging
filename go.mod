@@ -6,6 +6,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/segmentio/kafka-go v0.4.51
+	github.com/shopspring/decimal v1.4.0
 	google.golang.org/grpc v1.74.2
 	google.golang.org/protobuf v1.36.6
 )

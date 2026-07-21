@@ -12,8 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
+
+func dInt(n int64) decimal.Decimal     { return decimal.NewFromInt(n) }
+func dFloat(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
 
 func TestBankAdapterFallbackQuote(t *testing.T) {
 	b := NewBankAdapter(1.10)
@@ -31,7 +36,7 @@ func TestBankAdapterFallbackQuote(t *testing.T) {
 
 func TestBankAdapterFallbackSubmit(t *testing.T) {
 	b := NewBankAdapter(1.10)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, QuotedRate: 1.10, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), QuotedRate: dFloat(1.10), Tenor: domain.TenorSpot}
 	fills, err := b.Submit(context.Background(), h)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -49,13 +54,13 @@ func TestBankAdapterFallbackSubmit(t *testing.T) {
 
 func TestVenueAdapterFallbackSubmit(t *testing.T) {
 	v := NewVenueAdapter(1.10, 5) // 5 bps slippage
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, QuotedRate: 1.10, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), QuotedRate: dFloat(1.10), Tenor: domain.TenorSpot}
 	fills, err := v.Submit(context.Background(), h)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	want := 1.10 * (1 + 5.0/10_000.0)
-	if absDiffFloat(fills[0].Price, want) > 1e-9 {
+	want := dFloat(1.10 * (1 + 5.0/10_000.0))
+	if absDiffDecimal(fills[0].Price, want) > 1e-9 {
 		t.Fatalf("price = %v, want %v", fills[0].Price, want)
 	}
 	if fills[0].Venue != "venue" {
@@ -86,14 +91,14 @@ func (f *fakeExec) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fill, 
 	}
 	f.submits.Add(1)
 	amount := h.Notional
-	if f.liquidity > 0 && f.liquidity < amount {
-		amount = f.liquidity
+	if f.liquidity > 0 && dFloat(f.liquidity).LessThan(amount) {
+		amount = dFloat(f.liquidity)
 	}
 	return []domain.Fill{{
 		HedgeID:      h.ID,
 		Venue:        f.name,
 		VenueTradeID: f.name + "-trade-" + h.ID,
-		Price:        f.rate,
+		Price:        dFloat(f.rate),
 		Amount:       amount,
 		Timestamp:    time.Now().UTC(),
 	}}, nil
@@ -141,7 +146,7 @@ func TestRouterAllFail(t *testing.T) {
 func TestRouterRouteAndExecuteSingle(t *testing.T) {
 	a := &fakeExec{name: "a", rate: 1.10, liquidity: 1_000_000, costBPS: 0}
 	r := NewRouter(a)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), Tenor: domain.TenorSpot}
 	fills, err := r.RouteAndExecute(context.Background(), h)
 	if err != nil {
 		t.Fatalf("exec: %v", err)
@@ -149,7 +154,7 @@ func TestRouterRouteAndExecuteSingle(t *testing.T) {
 	if len(fills) != 1 {
 		t.Fatalf("fills = %d", len(fills))
 	}
-	if h.QuotedRate != 1.10 {
+	if !h.QuotedRate.Equal(dFloat(1.10)) {
 		t.Fatalf("quoted rate = %v, want 1.10", h.QuotedRate)
 	}
 	if fills[0].Venue != "a" {
@@ -162,7 +167,7 @@ func TestRouterRouteAndExecuteSplit(t *testing.T) {
 	a := &fakeExec{name: "a", rate: 1.10, liquidity: 60_000, costBPS: 0.1}
 	b := &fakeExec{name: "b", rate: 1.11, liquidity: 60_000, costBPS: 0}
 	r := NewRouter(a, b)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), Tenor: domain.TenorSpot}
 	fills, err := r.RouteAndExecute(context.Background(), h)
 	if err != nil {
 		t.Fatalf("exec: %v", err)
@@ -171,15 +176,15 @@ func TestRouterRouteAndExecuteSplit(t *testing.T) {
 		t.Fatalf("expected split into >=2 fills, got %d", len(fills))
 	}
 	venues := map[string]bool{}
-	var totalAmt float64
+	totalAmt := decimal.Zero
 	for _, f := range fills {
 		venues[f.Venue] = true
-		totalAmt += f.Amount
+		totalAmt = totalAmt.Add(f.Amount)
 	}
 	if len(venues) < 2 {
 		t.Fatalf("expected >=2 venues, got %v", venues)
 	}
-	if totalAmt != 100_000 {
+	if !totalAmt.Equal(dInt(100_000)) {
 		t.Fatalf("total filled = %v, want 100000", totalAmt)
 	}
 }
@@ -187,7 +192,7 @@ func TestRouterRouteAndExecuteSplit(t *testing.T) {
 func TestLatencyExecutorSLO(t *testing.T) {
 	a := &fakeExec{name: "a", rate: 1.10, liquidity: 1_000_000}
 	le := NewLatencyExecutor(a, 500*time.Millisecond)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, QuotedRate: 1.10, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), QuotedRate: dFloat(1.10), Tenor: domain.TenorSpot}
 	if _, err := le.Submit(context.Background(), h); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -207,7 +212,7 @@ func TestLatencyExecutorDetectsExceed(t *testing.T) {
 	// A fake executor that sleeps 20ms; SLO target 5ms -> exceeded.
 	a := &slowExec{inner: &fakeExec{name: "a", rate: 1.10, liquidity: 1_000_000}, delay: 20 * time.Millisecond}
 	le := NewLatencyExecutor(a, 5*time.Millisecond)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, QuotedRate: 1.10, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), QuotedRate: dFloat(1.10), Tenor: domain.TenorSpot}
 	if _, err := le.Submit(context.Background(), h); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -232,11 +237,8 @@ func (s *slowExec) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fill, 
 }
 func (s *slowExec) Cancel(ctx context.Context, id string) error { return s.inner.Cancel(ctx, id) }
 
-func absDiffFloat(a, b float64) float64 {
-	if a < b {
-		return b - a
-	}
-	return a - b
+func absDiffDecimal(a, b decimal.Decimal) float64 {
+	return a.Sub(b).Abs().InexactFloat64()
 }
 
 func TestBankAdapterLiveQuote(t *testing.T) {
@@ -320,7 +322,7 @@ func TestBankAdapterLiveSubmit(t *testing.T) {
 	t.Setenv("BANK_API_URL", srv.URL)
 	t.Setenv("BANK_API_KEY", "secret")
 	b := NewBankAdapter(1.10)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, Tenor: domain.TenorSpot, ClientRequestID: "req-1", QuotedRate: 1.10}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), Tenor: domain.TenorSpot, ClientRequestID: "req-1", QuotedRate: dFloat(1.10)}
 	fills, err := b.Submit(context.Background(), h)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -347,7 +349,7 @@ func TestBankAdapterLiveSubmitErrors(t *testing.T) {
 		defer srv.Close()
 		t.Setenv("BANK_API_URL", srv.URL)
 		b := NewBankAdapter(1.10)
-		_, err := b.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Tenor: domain.TenorSpot, QuotedRate: 1.10})
+		_, err := b.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), Tenor: domain.TenorSpot, QuotedRate: dFloat(1.10)})
 		if !errors.Is(err, ErrSubmitFailed) {
 			t.Fatalf("err = %v, want ErrSubmitFailed", err)
 		}
@@ -359,7 +361,7 @@ func TestBankAdapterLiveSubmitErrors(t *testing.T) {
 		defer srv.Close()
 		t.Setenv("BANK_API_URL", srv.URL)
 		b := NewBankAdapter(1.10)
-		_, err := b.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Tenor: domain.TenorSpot, QuotedRate: 1.10})
+		_, err := b.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), Tenor: domain.TenorSpot, QuotedRate: dFloat(1.10)})
 		if !errors.Is(err, ErrSubmitFailed) {
 			t.Fatalf("err = %v, want ErrSubmitFailed", err)
 		}
@@ -403,7 +405,7 @@ func TestVenueAdapterFallbackQuote(t *testing.T) {
 		t.Fatalf("quote: %v", err)
 	}
 	if q.Rate != 1.10 {
-		t.Fatalf("rate = %v", q.Rate)
+		t.Fatalf("rate = %v, want 1.10", q.Rate)
 	}
 	if q.Venue != "venue" {
 		t.Fatalf("venue = %q", q.Venue)
@@ -483,7 +485,7 @@ func TestVenueAdapterLiveSubmit(t *testing.T) {
 	t.Setenv("FX_VENUE_URL", srv.URL)
 	t.Setenv("FX_VENUE_API_KEY", "k")
 	v := NewVenueAdapter(1.10, 5)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, Tenor: domain.TenorSpot, ClientRequestID: "req-9", QuotedRate: 1.10}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), Tenor: domain.TenorSpot, ClientRequestID: "req-9", QuotedRate: dFloat(1.10)}
 	fills, err := v.Submit(context.Background(), h)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -510,7 +512,7 @@ func TestVenueAdapterLiveSubmitErrors(t *testing.T) {
 		defer srv.Close()
 		t.Setenv("FX_VENUE_URL", srv.URL)
 		v := NewVenueAdapter(1.10, 5)
-		_, err := v.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Tenor: domain.TenorSpot, QuotedRate: 1.10})
+		_, err := v.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), Tenor: domain.TenorSpot, QuotedRate: dFloat(1.10)})
 		if !errors.Is(err, ErrSubmitFailed) {
 			t.Fatalf("err = %v", err)
 		}
@@ -522,7 +524,7 @@ func TestVenueAdapterLiveSubmitErrors(t *testing.T) {
 		defer srv.Close()
 		t.Setenv("FX_VENUE_URL", srv.URL)
 		v := NewVenueAdapter(1.10, 5)
-		_, err := v.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Tenor: domain.TenorSpot, QuotedRate: 1.10})
+		_, err := v.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), Tenor: domain.TenorSpot, QuotedRate: dFloat(1.10)})
 		if !errors.Is(err, ErrSubmitFailed) {
 			t.Fatalf("err = %v", err)
 		}
@@ -579,7 +581,7 @@ func TestRouterExecutors(t *testing.T) {
 func TestRouterSplitIncomplete(t *testing.T) {
 	a := &fakeExec{name: "a", rate: 1.10, liquidity: 10, costBPS: 0}
 	r := NewRouter(a)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), Tenor: domain.TenorSpot}
 	_, err := r.RouteAndExecute(context.Background(), h)
 	if err == nil {
 		t.Fatal("expected incomplete fill error")
@@ -589,7 +591,7 @@ func TestRouterSplitIncomplete(t *testing.T) {
 func TestRouterRouteAndExecuteSubmitError(t *testing.T) {
 	a := &fakeExec{name: "a", rate: 1.10, liquidity: 1_000_000, costBPS: 0, fail: true}
 	r := NewRouter(a)
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, Tenor: domain.TenorSpot}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), Tenor: domain.TenorSpot}
 	_, err := r.RouteAndExecute(context.Background(), h)
 	if err == nil {
 		t.Fatal("expected error when submit fails")
@@ -614,7 +616,7 @@ func TestLatencyExecutorNameQuoteCancel(t *testing.T) {
 func TestLatencyExecutorSubmitError(t *testing.T) {
 	a := &fakeExec{name: "a", rate: 1.10, liquidity: 1_000_000, fail: true}
 	le := NewLatencyExecutor(a, time.Second)
-	_, err := le.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, QuotedRate: 1.10, Tenor: domain.TenorSpot})
+	_, err := le.Submit(context.Background(), &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), QuotedRate: dFloat(1.10), Tenor: domain.TenorSpot})
 	if err == nil {
 		t.Fatal("expected error from inner submit")
 	}

@@ -4,8 +4,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
+
+func dInt(n int64) decimal.Decimal     { return decimal.NewFromInt(n) }
+func dFloat(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
 
 func TestNewDummyDefaults(t *testing.T) {
 	d := NewDummy()
@@ -27,7 +32,7 @@ func TestQuoteAndExecute(t *testing.T) {
 		t.Fatalf("rate = %v, want 1.20", rate)
 	}
 
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100_000, QuotedRate: 1.20}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100_000), QuotedRate: dFloat(1.20)}
 	fills, err := d.Execute(h)
 	if err != nil {
 		t.Fatalf("execute err: %v", err)
@@ -35,10 +40,10 @@ func TestQuoteAndExecute(t *testing.T) {
 	if len(fills) != 1 {
 		t.Fatalf("fills len = %d, want 1", len(fills))
 	}
-	if fills[0].Price != 1.20 {
+	if !fills[0].Price.Equal(dFloat(1.20)) {
 		t.Fatalf("fill price = %v, want 1.20", fills[0].Price)
 	}
-	if fills[0].Amount != 100_000 {
+	if !fills[0].Amount.Equal(dInt(100_000)) {
 		t.Fatalf("fill amount = %v, want 100000", fills[0].Amount)
 	}
 	if fills[0].HedgeID != "h1" {
@@ -58,13 +63,13 @@ func TestQuoteAndExecute(t *testing.T) {
 
 func TestExecuteWithSlippage(t *testing.T) {
 	d := &DummyFXProvider{Rate: 1.0, SlippageBPS: 10}
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, QuotedRate: 1.0}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), QuotedRate: dFloat(1.0)}
 	fills, err := d.Execute(h)
 	if err != nil {
 		t.Fatalf("execute err: %v", err)
 	}
-	want := 1.0 * (1 + 10.0/10_000.0)
-	if fills[0].Price != want {
+	want := dFloat(1.0 * (1 + 10.0/10_000.0))
+	if !fills[0].Price.Equal(want) {
 		t.Fatalf("price = %v, want %v", fills[0].Price, want)
 	}
 	samples := d.Samples()
@@ -83,7 +88,7 @@ func TestQuoteFail(t *testing.T) {
 
 func TestExecuteFail(t *testing.T) {
 	d := &DummyFXProvider{Rate: 1.0, FailExecute: true}
-	h := &domain.Hedge{ID: "h1", QuotedRate: 1.0}
+	h := &domain.Hedge{ID: "h1", QuotedRate: dFloat(1.0)}
 	_, err := d.Execute(h)
 	if !errors.Is(err, ErrExecuteFailed) {
 		t.Fatalf("err = %v, want ErrExecuteFailed", err)
@@ -92,7 +97,7 @@ func TestExecuteFail(t *testing.T) {
 
 func TestSamplesReturnsCopy(t *testing.T) {
 	d := &DummyFXProvider{Rate: 1.0}
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, QuotedRate: 1.0}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), QuotedRate: dFloat(1.0)}
 	_, _ = d.Execute(h)
 	s := d.Samples()
 	if len(s) != 1 {

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/audit"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/clients"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
@@ -24,27 +26,27 @@ import (
 // audit sink, rate cache, settlement engine, and downstream clients,
 // exposing handler methods.
 type Service struct {
-	Store      store.Store
-	Tracker    *exposure.Tracker
-	Provider   provider.FXProvider
-	Policy     *policy.Policy
-	Audit      audit.Sink
-	Cache      *ratecache.Cache
-	Netter     *settlement.Engine
-	AuditC     *clients.AuditClient
-	ReconC     *clients.ReconClient
+	Store    store.Store
+	Tracker  *exposure.Tracker
+	Provider provider.FXProvider
+	Policy   *policy.Policy
+	Audit    audit.Sink
+	Cache    *ratecache.Cache
+	Netter   *settlement.Engine
+	AuditC   *clients.AuditClient
+	ReconC   *clients.ReconClient
 }
 
 // NewService returns a Service ready to serve requests.
 func NewService(st store.Store, tr *exposure.Tracker, p provider.FXProvider, pol *policy.Policy, a audit.Sink) *Service {
 	return &Service{
-		Store:      st,
-		Tracker:    tr,
-		Provider:   p,
-		Policy:     pol,
-		Audit:      a,
-		Cache:      ratecache.New(time.Second),
-		Netter:     settlement.New(),
+		Store:    st,
+		Tracker:  tr,
+		Provider: p,
+		Policy:   pol,
+		Audit:    a,
+		Cache:    ratecache.New(time.Second),
+		Netter:   settlement.New(),
 	}
 }
 
@@ -66,10 +68,14 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // --- exposure ---
 
+// addExposureReq is the POST /v1/exposure/{currency} request body.
+//
+// Breaking change: amount is a JSON string (decimal) instead of a JSON
+// number, to preserve precision on money fields.
 type addExposureReq struct {
-	Amount  float64 `json:"amount"`
-	EventID string  `json:"event_id,omitempty"`
-	Source  string  `json:"source,omitempty"`
+	Amount  decimal.Decimal `json:"amount"`
+	EventID string          `json:"event_id,omitempty"`
+	Source  string          `json:"source,omitempty"`
 }
 
 // AddExposure handles POST /v1/exposure/{currency}.
@@ -90,7 +96,7 @@ func (s *Service) AddExposure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if req.Amount == 0 {
+	if req.Amount.IsZero() {
 		writeError(w, http.StatusBadRequest, "amount must be non-zero")
 		return
 	}
@@ -106,11 +112,12 @@ func (s *Service) AddExposure(w http.ResponseWriter, r *http.Request) {
 	if s.Policy != nil {
 		current := s.Tracker.GetExposure(currency)
 		if current != nil {
-			openBefore := current.NetAmount - current.HedgeCoverage
-			openAfter := openBefore + req.Amount
+			openBefore := current.NetAmount.Sub(current.HedgeCoverage)
+			openAfter := openBefore.Add(req.Amount)
 			// Only block if this flow would *increase* the absolute open
 			// exposure beyond the cap.
-			if absFloat(openAfter) > s.Policy.EffectiveCap(currency) && absFloat(openAfter) > absFloat(openBefore) {
+			capDec := decimal.NewFromFloat(s.Policy.EffectiveCap(currency))
+			if absDecimal(openAfter).GreaterThan(capDec) && absDecimal(openAfter).GreaterThan(absDecimal(openBefore)) {
 				s.emit(audit.Event{
 					Type:     audit.EventCapBreach,
 					Currency: currency,
@@ -159,12 +166,16 @@ func (s *Service) GetExposure(w http.ResponseWriter, r *http.Request) {
 
 // --- hedges ---
 
+// createHedgeReq is the POST /v1/hedges request body.
+//
+// Breaking change: notional is a JSON string (decimal) instead of a JSON
+// number, to preserve precision on money fields.
 type createHedgeReq struct {
-	Currency        string  `json:"currency"`
-	Notional        float64 `json:"notional"`
-	Tenor           string  `json:"tenor"`
-	Type            string  `json:"type"`
-	ClientRequestID string  `json:"client_request_id,omitempty"`
+	Currency        string          `json:"currency"`
+	Notional        decimal.Decimal `json:"notional"`
+	Tenor           string          `json:"tenor"`
+	Type            string          `json:"type"`
+	ClientRequestID string          `json:"client_request_id,omitempty"`
 }
 
 // CreateHedge handles POST /v1/hedges.
@@ -187,7 +198,7 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "currency is required")
 		return
 	}
-	if req.Notional <= 0 {
+	if req.Notional.LessThanOrEqual(decimal.Zero) {
 		writeError(w, http.StatusBadRequest, "notional must be positive")
 		return
 	}
@@ -226,7 +237,7 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 	// Persist policy context on the hedge record.
 	if s.Policy != nil {
 		h.PolicyRatio = s.Policy.EffectiveRatio(currency)
-		h.PolicyCapUSD = s.Policy.EffectiveCap(currency)
+		h.PolicyCapUSD = decimal.NewFromFloat(s.Policy.EffectiveCap(currency)) // precision boundary: config float → decimal
 		dec := s.Policy.Decide(currency, s.Tracker.GetExposure(currency))
 		h.CapBreached = dec.BlockedByCap
 		if h.CapBreached {
@@ -240,7 +251,7 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rate, err := s.Provider.Quote(currency, req.Notional, string(tenor))
+	rate, err := s.Provider.Quote(currency, req.Notional.InexactFloat64(), string(tenor))
 	if err != nil {
 		h.Status = domain.StatusFailed
 		h.UpdatedAt = time.Now().UTC()
@@ -249,7 +260,7 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, h)
 		return
 	}
-	h.QuotedRate = rate
+	h.QuotedRate = decimal.NewFromFloat(rate) // precision boundary: provider float → decimal
 	// Feed the quoted rate into the live rate cache (decision-time rate).
 	if s.Cache != nil {
 		s.Cache.Update(currency, rate, "quote")
@@ -285,10 +296,11 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Persist P&L attribution entry.
+	slippageCost := decimal.NewFromFloat(slippageBPS).Mul(req.Notional).Div(decimal.NewFromInt(10_000))
 	s.Store.AddPnL(domain.PnL{
 		Currency:   currency,
 		Realized:   pnl,
-		Components: domain.PnLComponent{SlippageCost: slippageBPS * req.Notional / 10_000.0, HedgePnL: pnl},
+		Components: domain.PnLComponent{SlippageCost: slippageCost, HedgePnL: pnl},
 	})
 	s.emit(audit.Event{
 		Type:     audit.EventPnLEntry,
@@ -312,16 +324,18 @@ func (s *Service) CreateHedge(w http.ResponseWriter, r *http.Request) {
 // processFills computes per-fill slippage and P&L, records slippage
 // samples (skipping idempotent duplicate fills), emits slippage alerts,
 // feeds achieved rates back into the live rate cache, and returns the
-// aggregate slippage, P&L, and executed notional.
-func (s *Service) processFills(h *domain.Hedge, fills []domain.Fill) (slippageBPS, pnl, executedNotional float64) {
+// aggregate slippage (bps, float64), P&L (decimal), and executed notional
+// (decimal).
+func (s *Service) processFills(h *domain.Hedge, fills []domain.Fill) (slippageBPS float64, pnl, executedNotional decimal.Decimal) {
 	for _, f := range fills {
 		if s.Store.HasFill(f.Venue, f.VenueTradeID) {
 			continue
 		}
-		if h.QuotedRate != 0 {
-			fslip := (f.Price - h.QuotedRate) / h.QuotedRate * 10_000.0
+		if !h.QuotedRate.IsZero() {
+			// precision boundary: decimal → float for bps ratio computation
+			fslip := f.Price.Sub(h.QuotedRate).Div(h.QuotedRate).Mul(decimal.NewFromInt(10_000)).InexactFloat64()
 			slippageBPS = fslip
-			pnl += (h.QuotedRate - f.Price) * f.Amount
+			pnl = pnl.Add(h.QuotedRate.Sub(f.Price).Mul(f.Amount))
 		}
 		s.Store.AddSlippageSample(domain.SlippageSample{
 			Pair:         h.Currency + "USD",
@@ -330,7 +344,7 @@ func (s *Service) processFills(h *domain.Hedge, fills []domain.Fill) (slippageBP
 			SlippageBPS:  slippageBPS,
 			Timestamp:    f.Timestamp,
 		})
-		executedNotional += f.Amount
+		executedNotional = executedNotional.Add(f.Amount)
 		if s.Policy != nil && s.Policy.SlippageAlertBPS > 0 && absFloat(slippageBPS) > s.Policy.SlippageAlertBPS {
 			s.emit(audit.Event{
 				Type:     audit.EventSlippageAlert,
@@ -341,7 +355,7 @@ func (s *Service) processFills(h *domain.Hedge, fills []domain.Fill) (slippageBP
 			})
 		}
 		if s.Cache != nil {
-			s.Cache.Update(h.Currency, f.Price, "fill")
+			s.Cache.Update(h.Currency, f.Price.InexactFloat64(), "fill") // precision boundary: decimal → cache float
 		}
 	}
 	return slippageBPS, pnl, executedNotional
@@ -383,10 +397,10 @@ func (s *Service) GetHedge(w http.ResponseWriter, r *http.Request) {
 
 // pnlResponse is the GET /v1/pnl response shape.
 type pnlResponse struct {
-	From        time.Time     `json:"from"`
-	To          time.Time     `json:"to"`
-	ByCurrency  []domain.PnL  `json:"by_currency"`
-	Total       domain.PnL    `json:"total"`
+	From       time.Time    `json:"from"`
+	To         time.Time    `json:"to"`
+	ByCurrency []domain.PnL `json:"by_currency"`
+	Total      domain.PnL   `json:"total"`
 }
 
 // PnL handles GET /v1/pnl?from=&to=.
@@ -407,23 +421,24 @@ func (s *Service) PnL(w http.ResponseWriter, r *http.Request) {
 			p = &domain.PnL{Currency: h.Currency}
 			byCcy[h.Currency] = p
 		}
-		p.Realized += h.PnL
-		p.Components.HedgePnL += h.PnL
-		p.Components.SlippageCost += h.SlippageBPS * h.Notional / 10_000.0
+		p.Realized = p.Realized.Add(h.PnL)
+		p.Components.HedgePnL = p.Components.HedgePnL.Add(h.PnL)
+		slippageCost := decimal.NewFromFloat(h.SlippageBPS).Mul(h.Notional).Div(decimal.NewFromInt(10_000))
+		p.Components.SlippageCost = p.Components.SlippageCost.Add(slippageCost)
 	}
 
 	resp := pnlResponse{From: from, To: to}
 	var total domain.PnL
 	for _, p := range byCcy {
-		p.Total = p.Realized + p.Unrealized
+		p.Total = p.Realized.Add(p.Unrealized)
 		resp.ByCurrency = append(resp.ByCurrency, *p)
-		total.Realized += p.Realized
-		total.Unrealized += p.Unrealized
-		total.Components.HedgePnL += p.Components.HedgePnL
-		total.Components.SlippageCost += p.Components.SlippageCost
+		total.Realized = total.Realized.Add(p.Realized)
+		total.Unrealized = total.Unrealized.Add(p.Unrealized)
+		total.Components.HedgePnL = total.Components.HedgePnL.Add(p.Components.HedgePnL)
+		total.Components.SlippageCost = total.Components.SlippageCost.Add(p.Components.SlippageCost)
 	}
 	total.Currency = "TOTAL"
-	total.Total = total.Realized + total.Unrealized
+	total.Total = total.Realized.Add(total.Unrealized)
 	resp.Total = total
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -609,6 +624,10 @@ func absFloat(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+func absDecimal(x decimal.Decimal) decimal.Decimal {
+	return x.Abs()
 }
 
 // NewMux builds the HTTP routing mux for the service.

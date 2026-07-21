@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
@@ -65,15 +66,15 @@ func (d *DB) CreateHedge(h *domain.Hedge) {
 		_, _ = d.pool.Exec(ctx, `INSERT INTO hedges
 		(id, currency, notional, tenor, type, status, quoted_rate, slippage_bps, pnl, client_request_id, policy_ratio, policy_cap_usd, cap_breached, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-			h.ID, h.Currency, h.Notional, string(h.Tenor), string(h.Type), string(h.Status),
-			h.QuotedRate, h.SlippageBPS, h.PnL, h.ClientRequestID, h.PolicyRatio, h.PolicyCapUSD, h.CapBreached,
+			h.ID, h.Currency, h.Notional.String(), string(h.Tenor), string(h.Type), string(h.Status),
+			h.QuotedRate.String(), h.SlippageBPS, h.PnL.String(), h.ClientRequestID, h.PolicyRatio, h.PolicyCapUSD.String(), h.CapBreached,
 			h.CreatedAt, h.UpdatedAt)
 	} else {
 		_, _ = d.pool.Exec(ctx, `INSERT INTO hedges
 		(id, currency, notional, tenor, type, status, quoted_rate, slippage_bps, pnl, client_request_id, policy_ratio, policy_cap_usd, cap_breached, value_date, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-			h.ID, h.Currency, h.Notional, string(h.Tenor), string(h.Type), string(h.Status),
-			h.QuotedRate, h.SlippageBPS, h.PnL, h.ClientRequestID, h.PolicyRatio, h.PolicyCapUSD, h.CapBreached,
+			h.ID, h.Currency, h.Notional.String(), string(h.Tenor), string(h.Type), string(h.Status),
+			h.QuotedRate.String(), h.SlippageBPS, h.PnL.String(), h.ClientRequestID, h.PolicyRatio, h.PolicyCapUSD.String(), h.CapBreached,
 			valueDate, h.CreatedAt, h.UpdatedAt)
 	}
 	d.syncFills(ctx, h)
@@ -91,7 +92,7 @@ func (d *DB) syncFills(ctx context.Context, h *domain.Hedge) {
 		ON CONFLICT (venue, venue_trade_id) DO UPDATE SET
 			fill_price=EXCLUDED.fill_price, quoted_price=EXCLUDED.quoted_price,
 			slippage_bps=EXCLUDED.slippage_bps, amount=EXCLUDED.amount, ts=EXCLUDED.ts, updated_at=now()`,
-			fillID, h.ID, f.Venue, f.VenueTradeID, f.Price, h.QuotedRate, h.SlippageBPS, f.Amount, f.Timestamp)
+			fillID, h.ID, f.Venue, f.VenueTradeID, f.Price.String(), h.QuotedRate.String(), h.SlippageBPS, f.Amount.String(), f.Timestamp)
 	}
 }
 
@@ -102,16 +103,21 @@ func (d *DB) GetHedgeByClientRequest(reqID string) *domain.Hedge {
 	ctx := context.Background()
 	var h domain.Hedge
 	var tenor, status, htype string
+	var notional, quotedRate, pnl, policyCapUSD string
 	var valueDate time.Time
 	err := d.pool.QueryRow(ctx, `SELECT id, currency, notional, tenor, type, status, quoted_rate,
 		slippage_bps, pnl, client_request_id, policy_ratio, policy_cap_usd, cap_breached, value_date, created_at, updated_at
 		FROM hedges WHERE client_request_id=$1`, reqID).
-		Scan(&h.ID, &h.Currency, &h.Notional, &tenor, &htype, &status, &h.QuotedRate,
-			&h.SlippageBPS, &h.PnL, &h.ClientRequestID, &h.PolicyRatio, &h.PolicyCapUSD, &h.CapBreached,
+		Scan(&h.ID, &h.Currency, &notional, &tenor, &htype, &status, &quotedRate,
+			&h.SlippageBPS, &pnl, &h.ClientRequestID, &h.PolicyRatio, &policyCapUSD, &h.CapBreached,
 			&valueDate, &h.CreatedAt, &h.UpdatedAt)
 	if err != nil {
 		return nil
 	}
+	h.Notional, _ = decimal.NewFromString(notional)
+	h.QuotedRate, _ = decimal.NewFromString(quotedRate)
+	h.PnL, _ = decimal.NewFromString(pnl)
+	h.PolicyCapUSD, _ = decimal.NewFromString(policyCapUSD)
 	h.Tenor = domain.Tenor(tenor)
 	h.Type = domain.HedgeType(htype)
 	h.Status = domain.HedgeStatus(status)
@@ -141,16 +147,21 @@ func (d *DB) GetHedge(id string) *domain.Hedge {
 	ctx := context.Background()
 	var h domain.Hedge
 	var tenor, status, htype string
+	var notional, quotedRate, pnl, policyCapUSD string
 	var valueDate time.Time
 	err := d.pool.QueryRow(ctx, `SELECT id, currency, notional, tenor, type, status, quoted_rate,
 		slippage_bps, pnl, client_request_id, policy_ratio, policy_cap_usd, cap_breached, value_date, created_at, updated_at
 		FROM hedges WHERE id=$1`, id).
-		Scan(&h.ID, &h.Currency, &h.Notional, &tenor, &htype, &status, &h.QuotedRate,
-			&h.SlippageBPS, &h.PnL, &h.ClientRequestID, &h.PolicyRatio, &h.PolicyCapUSD, &h.CapBreached,
+		Scan(&h.ID, &h.Currency, &notional, &tenor, &htype, &status, &quotedRate,
+			&h.SlippageBPS, &pnl, &h.ClientRequestID, &h.PolicyRatio, &policyCapUSD, &h.CapBreached,
 			&valueDate, &h.CreatedAt, &h.UpdatedAt)
 	if err != nil {
 		return nil
 	}
+	h.Notional, _ = decimal.NewFromString(notional)
+	h.QuotedRate, _ = decimal.NewFromString(quotedRate)
+	h.PnL, _ = decimal.NewFromString(pnl)
+	h.PolicyCapUSD, _ = decimal.NewFromString(policyCapUSD)
 	h.Tenor = domain.Tenor(tenor)
 	h.Type = domain.HedgeType(htype)
 	h.Status = domain.HedgeStatus(status)
@@ -173,9 +184,12 @@ func (d *DB) loadFills(ctx context.Context, hedgeID string) ([]domain.Fill, erro
 	var out []domain.Fill
 	for rows.Next() {
 		var f domain.Fill
-		if err := rows.Scan(&f.HedgeID, &f.Venue, &f.VenueTradeID, &f.Price, &f.Amount, &f.Timestamp); err != nil {
+		var price, amount string
+		if err := rows.Scan(&f.HedgeID, &f.Venue, &f.VenueTradeID, &price, &amount, &f.Timestamp); err != nil {
 			return nil, err
 		}
+		f.Price, _ = decimal.NewFromString(price)
+		f.Amount, _ = decimal.NewFromString(amount)
 		out = append(out, f)
 	}
 	return out, rows.Err()
@@ -196,9 +210,9 @@ func (d *DB) UpdateHedge(id string, fn func(*domain.Hedge) error) (*domain.Hedge
 			status=$6, quoted_rate=$7, slippage_bps=$8, pnl=$9, client_request_id=$10,
 			policy_ratio=$11, policy_cap_usd=$12, cap_breached=$13, value_date=NULL, updated_at=$14
 			WHERE id=$1`,
-			id, h.Currency, h.Notional, string(h.Tenor), string(h.Type),
-			string(h.Status), h.QuotedRate, h.SlippageBPS, h.PnL, h.ClientRequestID,
-			h.PolicyRatio, h.PolicyCapUSD, h.CapBreached, h.UpdatedAt)
+			id, h.Currency, h.Notional.String(), string(h.Tenor), string(h.Type),
+			string(h.Status), h.QuotedRate.String(), h.SlippageBPS, h.PnL.String(), h.ClientRequestID,
+			h.PolicyRatio, h.PolicyCapUSD.String(), h.CapBreached, h.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -207,9 +221,9 @@ func (d *DB) UpdateHedge(id string, fn func(*domain.Hedge) error) (*domain.Hedge
 			status=$6, quoted_rate=$7, slippage_bps=$8, pnl=$9, client_request_id=$10,
 			policy_ratio=$11, policy_cap_usd=$12, cap_breached=$13, value_date=$14, updated_at=$15
 			WHERE id=$1`,
-			id, h.Currency, h.Notional, string(h.Tenor), string(h.Type),
-			string(h.Status), h.QuotedRate, h.SlippageBPS, h.PnL, h.ClientRequestID,
-			h.PolicyRatio, h.PolicyCapUSD, h.CapBreached, valueDate, h.UpdatedAt)
+			id, h.Currency, h.Notional.String(), string(h.Tenor), string(h.Type),
+			string(h.Status), h.QuotedRate.String(), h.SlippageBPS, h.PnL.String(), h.ClientRequestID,
+			h.PolicyRatio, h.PolicyCapUSD.String(), h.CapBreached, valueDate, h.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -247,12 +261,17 @@ func (d *DB) scanHedges(ctx context.Context, rows pgx.Rows) []*domain.Hedge {
 	for rows.Next() {
 		var h domain.Hedge
 		var tenor, status, htype string
+		var notional, quotedRate, pnl, policyCapUSD string
 		var valueDate time.Time
-		if err := rows.Scan(&h.ID, &h.Currency, &h.Notional, &tenor, &htype, &status, &h.QuotedRate,
-			&h.SlippageBPS, &h.PnL, &h.ClientRequestID, &h.PolicyRatio, &h.PolicyCapUSD, &h.CapBreached,
+		if err := rows.Scan(&h.ID, &h.Currency, &notional, &tenor, &htype, &status, &quotedRate,
+			&h.SlippageBPS, &pnl, &h.ClientRequestID, &h.PolicyRatio, &policyCapUSD, &h.CapBreached,
 			&valueDate, &h.CreatedAt, &h.UpdatedAt); err != nil {
 			return out
 		}
+		h.Notional, _ = decimal.NewFromString(notional)
+		h.QuotedRate, _ = decimal.NewFromString(quotedRate)
+		h.PnL, _ = decimal.NewFromString(pnl)
+		h.PolicyCapUSD, _ = decimal.NewFromString(policyCapUSD)
 		h.Tenor = domain.Tenor(tenor)
 		h.Type = domain.HedgeType(htype)
 		h.Status = domain.HedgeStatus(status)
@@ -274,7 +293,7 @@ func (d *DB) AddSlippageSample(sample domain.SlippageSample) {
 	_, _ = d.pool.Exec(ctx, `INSERT INTO slippage_samples
 	(id, pair, quoted_rate, executed_rate, slippage_bps, ts)
 	VALUES ($1,$2,$3,$4,$5,$6)`,
-		sampleID, sample.Pair, sample.QuotedRate, sample.ExecutedRate, sample.SlippageBPS, sample.Timestamp)
+		sampleID, sample.Pair, sample.QuotedRate.String(), sample.ExecutedRate.String(), sample.SlippageBPS, sample.Timestamp)
 }
 
 func (d *DB) AddPnL(p domain.PnL) {
@@ -283,7 +302,7 @@ func (d *DB) AddPnL(p domain.PnL) {
 	_, _ = d.pool.Exec(ctx, `INSERT INTO fx_pnl
 	(id, currency, component, realized, unrealized, rate, ts)
 	VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		pnlID, p.Currency, "HEDGE_PNL", p.Realized, p.Unrealized, p.Components.SlippageCost, time.Now().UTC())
+		pnlID, p.Currency, "HEDGE_PNL", p.Realized.String(), p.Unrealized.String(), p.Components.SlippageCost.String(), time.Now().UTC())
 }
 
 func (d *DB) AllPnL() []domain.PnL {
@@ -296,13 +315,15 @@ func (d *DB) AllPnL() []domain.PnL {
 	var out []domain.PnL
 	for rows.Next() {
 		var p domain.PnL
-		var slippageCost float64
-		if err := rows.Scan(&p.Currency, &p.Realized, &p.Unrealized, &slippageCost); err != nil {
+		var realized, unrealized, slippageCost string
+		if err := rows.Scan(&p.Currency, &realized, &unrealized, &slippageCost); err != nil {
 			return out
 		}
-		p.Total = p.Realized + p.Unrealized
+		p.Realized, _ = decimal.NewFromString(realized)
+		p.Unrealized, _ = decimal.NewFromString(unrealized)
+		p.Total = p.Realized.Add(p.Unrealized)
 		p.Components.HedgePnL = p.Realized
-		p.Components.SlippageCost = slippageCost
+		p.Components.SlippageCost, _ = decimal.NewFromString(slippageCost)
 		out = append(out, p)
 	}
 	return out
@@ -314,7 +335,7 @@ func (d *DB) AppendExposureSnapshot(e *domain.Exposure) {
 	_, _ = d.pool.Exec(ctx, `INSERT INTO fx_exposures
 	(id, currency, net_amount, hedge_coverage, open_amount, ts)
 	VALUES ($1,$2,$3,$4,$5,$6)`,
-		expID, e.Currency, e.NetAmount, e.HedgeCoverage, e.OpenAmount, e.UpdatedAt)
+		expID, e.Currency, e.NetAmount.String(), e.HedgeCoverage.String(), e.OpenAmount.String(), e.UpdatedAt)
 }
 
 func (d *DB) ExposureSnapshots(currency string) []domain.Exposure {
@@ -334,9 +355,13 @@ func (d *DB) ExposureSnapshots(currency string) []domain.Exposure {
 	var out []domain.Exposure
 	for rows.Next() {
 		var e domain.Exposure
-		if err := rows.Scan(&e.Currency, &e.NetAmount, &e.HedgeCoverage, &e.OpenAmount, &e.UpdatedAt); err != nil {
+		var net, coverage, open string
+		if err := rows.Scan(&e.Currency, &net, &coverage, &open, &e.UpdatedAt); err != nil {
 			return out
 		}
+		e.NetAmount, _ = decimal.NewFromString(net)
+		e.HedgeCoverage, _ = decimal.NewFromString(coverage)
+		e.OpenAmount, _ = decimal.NewFromString(open)
 		out = append(out, e)
 	}
 	return out
@@ -371,9 +396,12 @@ func (d *DB) SlippageSamples(pair string, from, to time.Time) []domain.SlippageS
 	var out []domain.SlippageSample
 	for rows.Next() {
 		var s domain.SlippageSample
-		if err := rows.Scan(&s.Pair, &s.QuotedRate, &s.ExecutedRate, &s.SlippageBPS, &s.Timestamp); err != nil {
+		var quotedRate, executedRate string
+		if err := rows.Scan(&s.Pair, &quotedRate, &executedRate, &s.SlippageBPS, &s.Timestamp); err != nil {
 			return out
 		}
+		s.QuotedRate, _ = decimal.NewFromString(quotedRate)
+		s.ExecutedRate, _ = decimal.NewFromString(executedRate)
 		out = append(out, s)
 	}
 	return out

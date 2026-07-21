@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/audit"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/clients"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
@@ -17,6 +19,33 @@ import (
 	"github.com/ai-crypto-onramp/fx-hedging/internal/provider"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
 )
+
+func dInt(n int64) decimal.Decimal     { return decimal.NewFromInt(n) }
+func dFloat(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
+
+// decFromMap extracts a money field from a decoded JSON response map. The
+// REST API serializes money as JSON strings (decimal.Decimal), so values
+// arrive as strings. This helper tolerates both string and number forms.
+func decFromMap(t *testing.T, m map[string]interface{}, key string) decimal.Decimal {
+	t.Helper()
+	v, ok := m[key]
+	if !ok {
+		t.Fatalf("key %q missing from response: %v", key, m)
+	}
+	switch x := v.(type) {
+	case string:
+		d, err := decimal.NewFromString(x)
+		if err != nil {
+			t.Fatalf("key %q = %q is not a decimal: %v", key, x, err)
+		}
+		return d
+	case float64:
+		return decimal.NewFromFloat(x)
+	default:
+		t.Fatalf("key %q has unexpected type %T (%v)", key, v, v)
+	}
+	return decimal.Zero
+}
 
 func newTestService(t *testing.T, p provider.FXProvider) (*Service, *audit.Recorder, store.Store, *exposure.Tracker) {
 	t.Helper()
@@ -87,10 +116,10 @@ func TestAddExposure(t *testing.T) {
 		t.Fatalf("code = %d, body=%s", rec1.Code, rec1.Body.String())
 	}
 	m := decodeBody(t, rec1)
-	if m["net_amount"].(float64) != 100_000 {
+	if !decFromMap(t, m, "net_amount").Equal(dInt(100_000)) {
 		t.Fatalf("net = %v, want 100000", m["net_amount"])
 	}
-	if m["open_amount"].(float64) != 100_000 {
+	if !decFromMap(t, m, "open_amount").Equal(dInt(100_000)) {
 		t.Fatalf("open = %v, want 100000", m["open_amount"])
 	}
 
@@ -99,7 +128,7 @@ func TestAddExposure(t *testing.T) {
 		t.Fatalf("code = %d", rec2.Code)
 	}
 	m2 := decodeBody(t, rec2)
-	if m2["net_amount"].(float64) != 70_000 {
+	if !decFromMap(t, m2, "net_amount").Equal(dInt(70_000)) {
 		t.Fatalf("net = %v, want 70000 (case-insensitive currency)", m2["net_amount"])
 	}
 
@@ -152,7 +181,7 @@ func TestGetExposureMissing(t *testing.T) {
 	if m["currency"] != "USD" {
 		t.Fatalf("currency = %v", m["currency"])
 	}
-	if m["net_amount"].(float64) != 0 {
+	if !decFromMap(t, m, "net_amount").IsZero() {
 		t.Fatalf("net = %v, want 0", m["net_amount"])
 	}
 }
@@ -162,7 +191,7 @@ func TestCreateHedgeSuccess(t *testing.T) {
 	mux := NewMux(svc)
 
 	// Set up exposure first.
-	tr.AddExposure("EUR", 100_000)
+	tr.AddExposure("EUR", dInt(100_000))
 
 	body := map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "SPOT", "type": "SPOT"}
 	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", body)
@@ -176,13 +205,13 @@ func TestCreateHedgeSuccess(t *testing.T) {
 	if h.Status != domain.StatusExecuted {
 		t.Fatalf("status = %q, want executed", h.Status)
 	}
-	if h.QuotedRate != 1.10 {
+	if !h.QuotedRate.Equal(dFloat(1.10)) {
 		t.Fatalf("quoted rate = %v, want 1.10", h.QuotedRate)
 	}
 	if len(h.Fills) != 1 {
 		t.Fatalf("fills len = %d, want 1", len(h.Fills))
 	}
-	if h.Fills[0].Price != 1.10 {
+	if !h.Fills[0].Price.Equal(dFloat(1.10)) {
 		t.Fatalf("fill price = %v, want 1.10", h.Fills[0].Price)
 	}
 	if h.Fills[0].VenueTradeID == "" {
@@ -191,10 +220,10 @@ func TestCreateHedgeSuccess(t *testing.T) {
 
 	// Coverage should be increased.
 	exp := tr.GetExposure("EUR")
-	if exp.HedgeCoverage != 90_000 {
+	if !exp.HedgeCoverage.Equal(dInt(90_000)) {
 		t.Fatalf("coverage = %v, want 90000", exp.HedgeCoverage)
 	}
-	if exp.OpenAmount != 10_000 {
+	if !exp.OpenAmount.Equal(dInt(10_000)) {
 		t.Fatalf("open = %v, want 10000", exp.OpenAmount)
 	}
 
@@ -452,7 +481,7 @@ func TestAddExposureIdempotent(t *testing.T) {
 		t.Fatalf("r2 code = %d", r2.Code)
 	}
 	m := decodeBody(t, r2)
-	if m["net_amount"].(float64) != 100_000 {
+	if !decFromMap(t, m, "net_amount").Equal(dInt(100_000)) {
 		t.Fatalf("net = %v, want 100000 (no double count)", m["net_amount"])
 	}
 }
@@ -617,10 +646,10 @@ func TestIntegrationServer(t *testing.T) {
 	var exp domain.Exposure
 	_ = json.NewDecoder(resp.Body).Decode(&exp)
 	resp.Body.Close()
-	if exp.HedgeCoverage != 180_000 {
+	if !exp.HedgeCoverage.Equal(dInt(180_000)) {
 		t.Fatalf("coverage = %v, want 180000", exp.HedgeCoverage)
 	}
-	if exp.OpenAmount != 20_000 {
+	if !exp.OpenAmount.Equal(dInt(20_000)) {
 		t.Fatalf("open = %v, want 20000", exp.OpenAmount)
 	}
 
@@ -640,8 +669,8 @@ func TestIntegrationServer(t *testing.T) {
 
 func TestListHedges(t *testing.T) {
 	svc, _, st, _ := newTestService(t, nil)
-	st.CreateHedge(&domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Tenor: domain.TenorSpot, Type: domain.TypeSpot, Status: domain.StatusPending, CreatedAt: time.Now()})
-	st.CreateHedge(&domain.Hedge{ID: "h2", Currency: "JPY", Notional: 50, Tenor: domain.TenorSpot, Type: domain.TypeSpot, Status: domain.StatusExecuted, CreatedAt: time.Now()})
+	st.CreateHedge(&domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), Tenor: domain.TenorSpot, Type: domain.TypeSpot, Status: domain.StatusPending, CreatedAt: time.Now()})
+	st.CreateHedge(&domain.Hedge{ID: "h2", Currency: "JPY", Notional: dInt(50), Tenor: domain.TenorSpot, Type: domain.TypeSpot, Status: domain.StatusExecuted, CreatedAt: time.Now()})
 	mux := NewMux(svc)
 
 	rec := doJSON(t, mux, http.MethodGet, "/v1/hedges", nil)
@@ -671,8 +700,8 @@ func TestListHedges(t *testing.T) {
 
 func TestListExposures(t *testing.T) {
 	svc, _, _, tr := newTestService(t, nil)
-	tr.AddExposure("EUR", 100000)
-	tr.AddExposure("JPY", -30000)
+	tr.AddExposure("EUR", dInt(100000))
+	tr.AddExposure("JPY", dInt(-30000))
 	mux := NewMux(svc)
 
 	rec := doJSON(t, mux, http.MethodGet, "/v1/exposures", nil)
@@ -748,7 +777,7 @@ func TestPublishExecutionToRecon(t *testing.T) {
 
 	svc, _, _, tr := newTestService(t, nil)
 	svc.ReconC = clients.NewReconClient(nil)
-	tr.AddExposure("EUR", 100_000)
+	tr.AddExposure("EUR", dInt(100_000))
 	mux := NewMux(svc)
 	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 90_000, "tenor": "SPOT", "type": "SPOT"})
 	if r.Code != http.StatusCreated {
@@ -796,7 +825,7 @@ func TestSettlementPublishesObligationsToRecon(t *testing.T) {
 func TestCreateHedgeCapBreachAudit(t *testing.T) {
 	svc, rec, _, tr := newTestService(t, nil)
 	svc.Policy.MaxOpenExposureUSD = 10_000
-	tr.AddExposure("EUR", 1_000_000) // open already >> cap
+	tr.AddExposure("EUR", dInt(1_000_000)) // open already >> cap
 	mux := NewMux(svc)
 	r := doJSON(t, mux, http.MethodPost, "/v1/hedges", map[string]interface{}{"currency": "EUR", "notional": 50_000, "tenor": "SPOT", "type": "SPOT"})
 	if r.Code != http.StatusCreated {
@@ -817,16 +846,16 @@ func TestProcessFillsSkipsDuplicate(t *testing.T) {
 	svc, _, st, _ := newTestService(t, nil)
 	// Pre-record a fill with a known venue trade id; the dummy provider will
 	// produce a different id, so directly exercise processFills via a duplicate.
-	h := &domain.Hedge{ID: "h-dup", Currency: "EUR", Notional: 100, QuotedRate: 1.10, Status: domain.StatusExecuting}
+	h := &domain.Hedge{ID: "h-dup", Currency: "EUR", Notional: dInt(100), QuotedRate: dFloat(1.10), Status: domain.StatusExecuting}
 	st.CreateHedge(h)
-	dupFill := domain.Fill{HedgeID: "h-dup", Venue: "bank", VenueTradeID: "vt-dup", Price: 1.11, Amount: 100, Timestamp: time.Now().UTC()}
+	dupFill := domain.Fill{HedgeID: "h-dup", Venue: "bank", VenueTradeID: "vt-dup", Price: dFloat(1.11), Amount: dInt(100), Timestamp: time.Now().UTC()}
 	_, _ = st.UpdateHedge("h-dup", func(stored *domain.Hedge) error {
 		stored.Fills = append(stored.Fills, dupFill)
 		return nil
 	})
 	// processFills should skip the duplicate fill (HasFill true).
 	slippage, pnl, execNotional := svc.processFills(h, []domain.Fill{dupFill})
-	if slippage != 0 || pnl != 0 || execNotional != 0 {
+	if slippage != 0 || !pnl.IsZero() || !execNotional.IsZero() {
 		t.Fatalf("duplicate fill should be skipped: slip=%v pnl=%v notional=%v", slippage, pnl, execNotional)
 	}
 }

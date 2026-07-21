@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/google/uuid"
 )
@@ -23,25 +25,26 @@ type FXProvider interface {
 
 // Sentinel errors returned by the dummy provider.
 var (
-	ErrQuoteFailed    = errors.New("fx quote failed")
-	ErrExecuteFailed  = errors.New("fx execute failed")
+	ErrQuoteFailed   = errors.New("fx quote failed")
+	ErrExecuteFailed = errors.New("fx execute failed")
 )
 
 // DummyFXProvider is the single dummy FX provider. It succeeds at every
 // operation unless FailExecute is set or the DUMMY_FX_FAIL env var is "1".
 // The quoted rate is configurable via the DUMMY_FX_RATE env var (default 1.10).
 type DummyFXProvider struct {
-	mu           sync.Mutex
-	Rate         float64
-	FailExecute  bool
-	SlippageBPS  float64 // applied to executed rate vs quoted rate
-	samples      []domain.SlippageSample
+	mu          sync.Mutex
+	Rate        float64
+	FailExecute bool
+	SlippageBPS float64 // applied to executed rate vs quoted rate
+	samples     []domain.SlippageSample
 }
 
 // NewDummy reads env config and returns a DummyFXProvider. Defaults:
-//   DUMMY_FX_RATE      = 1.10
-//   DUMMY_FX_FAIL      = "" (no failure)
-//   DUMMY_FX_SLIPPAGE  = 0  (bps)
+//
+//	DUMMY_FX_RATE      = 1.10
+//	DUMMY_FX_FAIL      = "" (no failure)
+//	DUMMY_FX_SLIPPAGE  = 0  (bps)
 func NewDummy() *DummyFXProvider {
 	rate := 1.10
 	if v := os.Getenv("DUMMY_FX_RATE"); v != "" {
@@ -83,7 +86,7 @@ func (d *DummyFXProvider) Execute(h *domain.Hedge) ([]domain.Fill, error) {
 	quoted := h.QuotedRate
 	executed := quoted
 	if d.SlippageBPS != 0 {
-		executed = quoted * (1 + d.SlippageBPS/10_000.0)
+		executed = quoted.Mul(decimal.NewFromFloat(1 + d.SlippageBPS/10_000.0))
 	}
 	fill := domain.Fill{
 		HedgeID:      h.ID,

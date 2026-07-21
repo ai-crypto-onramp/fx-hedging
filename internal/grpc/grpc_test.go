@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/executor"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/exposure"
@@ -24,6 +26,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func dInt(n int64) decimal.Decimal     { return decimal.NewFromInt(n) }
+func dFloat(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
 
 func genCACertPath(t *testing.T) string {
 	t.Helper()
@@ -62,7 +67,7 @@ func (f *fakeExec) Quote(ctx context.Context, ccy string, n float64, tenor strin
 	return executor.Quote{Venue: f.name, Rate: f.rate, Liquidity: f.liq, CostBPS: 0, Tenor: tenor, ExpiresAt: time.Now().Add(time.Second)}, nil
 }
 func (f *fakeExec) Submit(ctx context.Context, h *domain.Hedge) ([]domain.Fill, error) {
-	return []domain.Fill{{HedgeID: h.ID, Venue: f.name, VenueTradeID: f.name + "-" + h.ID, Price: f.rate, Amount: h.Notional, Timestamp: time.Now().UTC()}}, nil
+	return []domain.Fill{{HedgeID: h.ID, Venue: f.name, VenueTradeID: f.name + "-" + h.ID, Price: dFloat(f.rate), Amount: h.Notional, Timestamp: time.Now().UTC()}}, nil
 }
 func (f *fakeExec) Cancel(ctx context.Context, id string) error { return nil }
 
@@ -133,7 +138,7 @@ func TestGetLiveRateNotFound(t *testing.T) {
 
 func TestGetNetExposure(t *testing.T) {
 	s := newTestServices(t)
-	s.Tracker.AddExposure("EUR", 100_000)
+	s.Tracker.AddExposure("EUR", dInt(100_000))
 	c, cleanup := startGRPC(t, s)
 	defer cleanup()
 	resp, err := c.GetNetExposure(context.Background(), &fxpb.GetNetExposureRequest{Currency: "EUR"})
@@ -174,7 +179,7 @@ func TestStreamExposure(t *testing.T) {
 	// First snapshot is empty (no exposure yet); push an exposure to get one.
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		s.Tracker.AddExposure("EUR", 100_000)
+		s.Tracker.AddExposure("EUR", dInt(100_000))
 	}()
 	got, err := stream.Recv()
 	if err != nil {
@@ -373,7 +378,7 @@ func TestStreamExposureEmptyCurrency(t *testing.T) {
 
 func TestStreamExposureContextCancel(t *testing.T) {
 	s := newTestServices(t)
-	s.Tracker.AddExposure("EUR", 100)
+	s.Tracker.AddExposure("EUR", dInt(100))
 	c, cleanup := startGRPC(t, s)
 	defer cleanup()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -450,8 +455,8 @@ func TestStreamExposureFiltersOtherCurrencies(t *testing.T) {
 	// Push JPY then EUR; JPY should be filtered out, EUR delivered.
 	go func() {
 		time.Sleep(30 * time.Millisecond)
-		s.Tracker.AddExposure("JPY", 1000)
-		s.Tracker.AddExposure("EUR", 200_000)
+		s.Tracker.AddExposure("JPY", dInt(1000))
+		s.Tracker.AddExposure("EUR", dInt(200_000))
 	}()
 	got, err := stream.Recv()
 	if err != nil {

@@ -9,14 +9,14 @@ import (
 type EventType string
 
 const (
-	EventHedgeCreated   EventType = "hedge_created"
-	EventHedgeExecuted  EventType = "hedge_executed"
-	EventHedgeFailed    EventType = "hedge_failed"
-	EventExposureAdded  EventType = "exposure_added"
-	EventCapBreach      EventType = "cap_breach"
-	EventSlippageAlert  EventType = "slippage_alert"
-	EventPnLEntry       EventType = "pnl_entry"
-	EventSettlement     EventType = "settlement_obligation"
+	EventHedgeCreated  EventType = "hedge_created"
+	EventHedgeExecuted EventType = "hedge_executed"
+	EventHedgeFailed   EventType = "hedge_failed"
+	EventExposureAdded EventType = "exposure_added"
+	EventCapBreach     EventType = "cap_breach"
+	EventSlippageAlert EventType = "slippage_alert"
+	EventPnLEntry      EventType = "pnl_entry"
+	EventSettlement    EventType = "settlement_obligation"
 )
 
 // Event is an audit record emitted on each FX-hedging state change.

@@ -12,17 +12,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/executor"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/exposure"
+	grpcserver "github.com/ai-crypto-onramp/fx-hedging/internal/grpc"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/policy"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/ratecache"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
-	grpcserver "github.com/ai-crypto-onramp/fx-hedging/internal/grpc"
 	fxpb "github.com/ai-crypto-onramp/fx-hedging/proto/fx/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func dInt(n int64) decimal.Decimal     { return decimal.NewFromInt(n) }
+func dFloat(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
 
 // failingExec is an Executor that always fails Quote + Submit, simulating
 // a venue/bank outage.
@@ -46,11 +51,11 @@ func TestVenueDownFailsSafe(t *testing.T) {
 	s := &grpcserver.Services{Tracker: tr, Cache: cache, Policy: pol, Router: rtr, Store: st}
 
 	// Establish exposure within the cap.
-	tr.AddExposure("EUR", 50_000)
+	tr.AddExposure("EUR", dInt(50_000))
 
 	resp, err := submitPlan(t, s, &fxpb.SubmitHedgePlanRequest{
 		PlanId: "p1",
-		Legs: []*fxpb.HedgePlanLeg{{Currency: "EUR", Notional: 40_000, Tenor: "spot", Type: "spot"}},
+		Legs:   []*fxpb.HedgePlanLeg{{Currency: "EUR", Notional: 40_000, Tenor: "spot", Type: "spot"}},
 	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -64,19 +69,19 @@ func TestVenueDownFailsSafe(t *testing.T) {
 		t.Fatalf("leg status = %q, want failed", resp.Results[0].Status)
 	}
 	exp := tr.GetExposure("EUR")
-	if exp.HedgeCoverage != 0 {
+	if !exp.HedgeCoverage.IsZero() {
 		t.Fatalf("coverage = %v, want 0 (no fill on venue down)", exp.HedgeCoverage)
 	}
-	if absFloat(exp.OpenAmount) > pol.EffectiveCap("EUR") {
+	if absDecimal(exp.OpenAmount).GreaterThan(decimal.NewFromFloat(pol.EffectiveCap("EUR"))) {
 		t.Fatalf("open = %v exceeds cap %v (fail-safe breached)", exp.OpenAmount, pol.EffectiveCap("EUR"))
 	}
 }
 
 func TestDuplicateFillCallbackIdempotent(t *testing.T) {
 	st := store.New()
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Status: domain.StatusExecuted, QuotedRate: 1.10}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), Status: domain.StatusExecuted, QuotedRate: dFloat(1.10)}
 	st.CreateHedge(h)
-	fill := domain.Fill{HedgeID: "h1", Venue: "bank", VenueTradeID: "vt-1", Price: 1.10, Amount: 100, Timestamp: time.Now().UTC()}
+	fill := domain.Fill{HedgeID: "h1", Venue: "bank", VenueTradeID: "vt-1", Price: dFloat(1.10), Amount: dInt(100), Timestamp: time.Now().UTC()}
 	_, _ = st.UpdateHedge("h1", func(stored *domain.Hedge) error {
 		stored.Fills = append(stored.Fills, fill)
 		return nil
@@ -123,15 +128,15 @@ func TestDBOutageReplaysOnRecovery(t *testing.T) {
 
 	// Produce exposure updates while the sink is "available" (here it just
 	// counts; in a real outage the sink would error and drop).
-	tr.AddExposure("EUR", 100)
-	tr.AddExposure("EUR", -30)
+	tr.AddExposure("EUR", dInt(100))
+	tr.AddExposure("EUR", dInt(-30))
 	time.Sleep(30 * time.Millisecond)
 	if sink.callsCount() < 2 {
 		t.Fatalf("snapshot calls = %d, want >=2", sink.callsCount())
 	}
 	// Replay from the tracker reproduces the net.
 	exp := tr.GetExposure("EUR")
-	if exp.NetAmount != 70 {
+	if !exp.NetAmount.Equal(dInt(70)) {
 		t.Fatalf("replay net = %v, want 70", exp.NetAmount)
 	}
 	cancel()
@@ -184,11 +189,8 @@ func submitPlan(t *testing.T, s *grpcserver.Services, req *fxpb.SubmitHedgePlanR
 	return client.SubmitHedgePlan(context.Background(), req)
 }
 
-func absFloat(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
+func absDecimal(x decimal.Decimal) decimal.Decimal {
+	return x.Abs()
 }
 
 var _ = errors.New

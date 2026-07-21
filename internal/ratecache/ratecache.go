@@ -19,10 +19,10 @@ type Rate struct {
 
 // Cache is a thread-safe in-memory rate cache with a staleness guard.
 type Cache struct {
-	mu      sync.RWMutex
-	rates   map[string]Rate
-	ttl     time.Duration
-	reval   map[string]float64 // last revaluation rate per currency (cross-check)
+	mu    sync.RWMutex
+	rates map[string]Rate
+	ttl   time.Duration
+	reval map[string]float64 // last revaluation rate per currency (cross-check)
 }
 
 // ErrStale is returned when the cached rate for a currency is older than TTL.

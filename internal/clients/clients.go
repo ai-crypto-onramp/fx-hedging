@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -79,14 +81,17 @@ func splitCSV(s string) []string {
 }
 
 // AuditPayload is the JSON body posted to audit-event-log.
+//
+// Breaking change: amount is a JSON string (decimal) instead of a JSON
+// number, to preserve precision on money fields.
 type AuditPayload struct {
-	EventType string  `json:"event_type"`
-	Source    string  `json:"source_service"`
-	HedgeID   string  `json:"hedge_id,omitempty"`
-	Currency  string  `json:"currency,omitempty"`
-	Detail    string  `json:"detail,omitempty"`
-	At        string  `json:"at"`
-	Amount    float64 `json:"amount,omitempty"`
+	EventType string          `json:"event_type"`
+	Source    string          `json:"source_service"`
+	HedgeID   string          `json:"hedge_id,omitempty"`
+	Currency  string          `json:"currency,omitempty"`
+	Detail    string          `json:"detail,omitempty"`
+	At        string          `json:"at"`
+	Amount    decimal.Decimal `json:"amount,omitempty"`
 }
 
 // Emit posts ev to audit-event-log with idempotency key eventID. When a
@@ -169,15 +174,15 @@ func (a *AuditClient) emitKafka(ctx context.Context, ev AuditPayload, eventID st
 	}
 	envelope := map[string]any{
 		"schema_version": "1",
-		"id":              id,
-		"ts":              ev.At,
-		"source_service":  "fx-hedging",
-		"actor_id":        "fx-hedging",
-		"action":          ev.EventType,
-		"target_type":     "hedge",
-		"target_id":       ev.HedgeID,
-		"payload_hash":    payloadHash,
-		"payload":         json.RawMessage(payload),
+		"id":             id,
+		"ts":             ev.At,
+		"source_service": "fx-hedging",
+		"actor_id":       "fx-hedging",
+		"action":         ev.EventType,
+		"target_type":    "hedge",
+		"target_id":      ev.HedgeID,
+		"payload_hash":   payloadHash,
+		"payload":        json.RawMessage(payload),
 	}
 	body, err := json.Marshal(envelope)
 	if err != nil {
@@ -233,16 +238,20 @@ func NewReconClient(dl DeadLetterStore) *ReconClient {
 }
 
 // ExecutionRecord is a hedge execution record published to Reconciliation.
+//
+// Breaking change: notional, fill_price, quoted_price are JSON strings
+// (decimal) instead of JSON numbers, to preserve precision on money
+// fields. slippage_bps stays a JSON number (dimensionless ratio).
 type ExecutionRecord struct {
-	HedgeID       string  `json:"hedge_id"`
-	Currency      string  `json:"currency"`
-	Venue         string  `json:"venue"`
-	VenueTradeID  string  `json:"venue_trade_id"`
-	Notional      float64 `json:"notional"`
-	FillPrice     float64 `json:"fill_price"`
-	QuotedPrice   float64 `json:"quoted_price"`
-	SlippageBPS   float64 `json:"slippage_bps"`
-	ExecutedAt    string  `json:"executed_at"`
+	HedgeID      string          `json:"hedge_id"`
+	Currency     string          `json:"currency"`
+	Venue        string          `json:"venue"`
+	VenueTradeID string          `json:"venue_trade_id"`
+	Notional     decimal.Decimal `json:"notional"`
+	FillPrice    decimal.Decimal `json:"fill_price"`
+	QuotedPrice  decimal.Decimal `json:"quoted_price"`
+	SlippageBPS  float64         `json:"slippage_bps"`
+	ExecutedAt   string          `json:"executed_at"`
 }
 
 // PublishExecution posts a hedge execution record to Reconciliation.

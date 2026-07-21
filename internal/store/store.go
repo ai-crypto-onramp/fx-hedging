@@ -29,13 +29,13 @@ type Store interface {
 
 // MemStore is a thread-safe in-memory store of hedges and slippage samples.
 type MemStore struct {
-	mu       sync.RWMutex
-	hedges   map[string]*domain.Hedge
-	byCcy    map[string][]string // currency -> hedge ids
-	byReq    map[string]string   // client_request_id -> hedge id
-	samples  []domain.SlippageSample
-	pnlRows  []domain.PnL
-	expRows  []domain.Exposure
+	mu      sync.RWMutex
+	hedges  map[string]*domain.Hedge
+	byCcy   map[string][]string // currency -> hedge ids
+	byReq   map[string]string   // client_request_id -> hedge id
+	samples []domain.SlippageSample
+	pnlRows []domain.PnL
+	expRows []domain.Exposure
 }
 
 // New returns an empty in-memory store.

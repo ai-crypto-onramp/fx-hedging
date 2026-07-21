@@ -12,25 +12,27 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/executor"
-	fxpb "github.com/ai-crypto-onramp/fx-hedging/proto/fx/v1"
+	"github.com/ai-crypto-onramp/fx-hedging/internal/exposure"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/policy"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/ratecache"
 	"github.com/ai-crypto-onramp/fx-hedging/internal/store"
-	"github.com/ai-crypto-onramp/fx-hedging/internal/exposure"
+	fxpb "github.com/ai-crypto-onramp/fx-hedging/proto/fx/v1"
 
 	"github.com/google/uuid"
 )
 
 // Services bundles the dependencies used by the gRPC server.
 type Services struct {
-	Tracker  *exposure.Tracker
-	Cache    *ratecache.Cache
-	Policy   *policy.Policy
-	Router   *executor.Router
-	Store    store.Store
-	Now      func() time.Time
+	Tracker *exposure.Tracker
+	Cache   *ratecache.Cache
+	Policy  *policy.Policy
+	Router  *executor.Router
+	Store   store.Store
+	Now     func() time.Time
 }
 
 // Server implements fxpb.FXServer.
@@ -64,10 +66,10 @@ func (g *Server) GetLiveRate(ctx context.Context, req *fxpb.GetLiveRateRequest) 
 	// rather than quote off a rate inconsistent with book revaluation.
 	if !g.s.Cache.CrossCheck(ccy, 100) {
 		return &fxpb.GetLiveRateResponse{
-			Currency: ccy,
-			Rate:     r.Rate,
+			Currency:    ccy,
+			Rate:        r.Rate,
 			TsUnixNanos: r.At.UnixNano(),
-			Stale: true,
+			Stale:       true,
 		}, errors.New("live rate diverges from revaluation rate")
 	}
 	return &fxpb.GetLiveRateResponse{
@@ -89,11 +91,11 @@ func (g *Server) GetNetExposure(ctx context.Context, req *fxpb.GetNetExposureReq
 		return &fxpb.GetNetExposureResponse{Currency: ccy, TsUnixNanos: g.s.Now().UnixNano()}, nil
 	}
 	return &fxpb.GetNetExposureResponse{
-		Currency:     exp.Currency,
-		NetAmount:    exp.NetAmount,
-		HedgeCoverage: exp.HedgeCoverage,
-		OpenAmount:   exp.OpenAmount,
-		TsUnixNanos:  exp.UpdatedAt.UnixNano(),
+		Currency:      exp.Currency,
+		NetAmount:     exp.NetAmount.InexactFloat64(),     // precision boundary: decimal → proto double
+		HedgeCoverage: exp.HedgeCoverage.InexactFloat64(), // precision boundary: decimal → proto double
+		OpenAmount:    exp.OpenAmount.InexactFloat64(),    // precision boundary: decimal → proto double
+		TsUnixNanos:   exp.UpdatedAt.UnixNano(),
 	}, nil
 }
 
@@ -138,11 +140,11 @@ func (g *Server) StreamExposure(req *fxpb.StreamExposureRequest, stream fxpb.FX_
 
 func snapshotToProto(e *domain.Exposure) *fxpb.ExposureSnapshot {
 	return &fxpb.ExposureSnapshot{
-		Currency:     e.Currency,
-		NetAmount:    e.NetAmount,
-		HedgeCoverage: e.HedgeCoverage,
-		OpenAmount:   e.OpenAmount,
-		TsUnixNanos:  e.UpdatedAt.UnixNano(),
+		Currency:      e.Currency,
+		NetAmount:     e.NetAmount.InexactFloat64(),     // precision boundary: decimal → proto double
+		HedgeCoverage: e.HedgeCoverage.InexactFloat64(), // precision boundary: decimal → proto double
+		OpenAmount:    e.OpenAmount.InexactFloat64(),    // precision boundary: decimal → proto double
+		TsUnixNanos:   e.UpdatedAt.UnixNano(),
 	}
 }
 
@@ -161,24 +163,25 @@ func (g *Server) SubmitHedgePlan(ctx context.Context, req *fxpb.SubmitHedgePlanR
 	// Coordinate with the policy layer: reject plans that would breach the
 	// open cap. Sum the proposed notional per currency and check the
 	// resulting open exposure against the effective cap.
-	proposed := map[string]float64{}
+	proposed := map[string]decimal.Decimal{}
 	for _, leg := range req.GetLegs() {
-		proposed[leg.GetCurrency()] += leg.GetNotional()
+		// precision boundary: proto double → decimal
+		proposed[leg.GetCurrency()] = proposed[leg.GetCurrency()].Add(decimal.NewFromFloat(leg.GetNotional()))
 	}
 	for ccy, addNotional := range proposed {
 		exp := g.s.Tracker.GetExposure(ccy)
-		var open float64
+		var open decimal.Decimal
 		if exp != nil {
-			open = exp.OpenAmount - addNotional
+			open = exp.OpenAmount.Sub(addNotional)
 		} else {
-			open = -addNotional
+			open = addNotional.Neg()
 		}
 		cap := g.s.Policy.EffectiveCap(ccy)
-		if absFloat(open) > cap {
+		if absDecimal(open).GreaterThan(decimal.NewFromFloat(cap)) {
 			return &fxpb.SubmitHedgePlanResponse{
 				PlanId:       planID,
 				Rejected:     true,
-				RejectReason: "plan would breach MAX_OPEN_EXPOSURE_USD for " + ccy + " (open " + strconv.FormatFloat(open, 'f', 2, 64) + " > cap " + strconv.FormatFloat(cap, 'f', 2, 64) + ")",
+				RejectReason: "plan would breach MAX_OPEN_EXPOSURE_USD for " + ccy + " (open " + open.String() + " > cap " + strconv.FormatFloat(cap, 'f', 2, 64) + ")",
 			}, nil
 		}
 	}
@@ -207,8 +210,9 @@ func (g *Server) executeLeg(ctx context.Context, planID string, leg *fxpb.HedgeP
 	if tenor == domain.TenorForward {
 		htype = domain.TypeForward
 	}
-	notional := leg.GetNotional()
-	if notional <= 0 {
+	// precision boundary: proto double → decimal
+	notional := decimal.NewFromFloat(leg.GetNotional())
+	if notional.LessThanOrEqual(decimal.Zero) {
 		return &fxpb.HedgePlanLegResult{Currency: ccy, Error: "notional must be positive"}
 	}
 
@@ -243,20 +247,21 @@ func (g *Server) executeLeg(ctx context.Context, planID string, leg *fxpb.HedgeP
 
 	dec := g.s.Policy.Decide(ccy, g.s.Tracker.GetExposure(ccy))
 	h.PolicyRatio = g.s.Policy.EffectiveRatio(ccy)
-	h.PolicyCapUSD = g.s.Policy.EffectiveCap(ccy)
+	h.PolicyCapUSD = decimal.NewFromFloat(g.s.Policy.EffectiveCap(ccy)) // precision boundary: config float → decimal
 	h.CapBreached = dec.BlockedByCap
 
 	fills, err := g.s.Router.RouteAndExecute(ctx, h)
 	if err != nil {
 		h.Status = domain.StatusFailed
 		g.s.Store.CreateHedge(h)
-		return &fxpb.HedgePlanLegResult{Currency: ccy, HedgeId: h.ID, Status: string(domain.StatusFailed), Notional: notional, Error: err.Error()}
+		return &fxpb.HedgePlanLegResult{Currency: ccy, HedgeId: h.ID, Status: string(domain.StatusFailed), Notional: notional.InexactFloat64(), Error: err.Error()}
 	}
 
 	var slippageBPS float64
 	for _, f := range fills {
-		if h.QuotedRate != 0 {
-			fslip := (f.Price - h.QuotedRate) / h.QuotedRate * 10_000.0
+		if !h.QuotedRate.IsZero() {
+			// precision boundary: decimal → float for bps ratio computation
+			fslip := f.Price.Sub(h.QuotedRate).Div(h.QuotedRate).Mul(decimal.NewFromInt(10_000)).InexactFloat64()
 			slippageBPS = fslip
 		}
 		g.s.Store.AddSlippageSample(domain.SlippageSample{
@@ -281,16 +286,13 @@ func legResultFromHedge(h *domain.Hedge, errStr string) *fxpb.HedgePlanLegResult
 		Currency:    h.Currency,
 		HedgeId:     h.ID,
 		Status:      string(h.Status),
-		Notional:    h.Notional,
-		QuotedRate:  h.QuotedRate,
+		Notional:    h.Notional.InexactFloat64(),   // precision boundary: decimal → proto double
+		QuotedRate:  h.QuotedRate.InexactFloat64(), // precision boundary: decimal → proto double
 		SlippageBps: h.SlippageBPS,
 		Error:       errStr,
 	}
 }
 
-func absFloat(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
+func absDecimal(x decimal.Decimal) decimal.Decimal {
+	return x.Abs()
 }

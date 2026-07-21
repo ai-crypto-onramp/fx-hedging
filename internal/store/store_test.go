@@ -6,12 +6,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/ai-crypto-onramp/fx-hedging/internal/domain"
 )
 
+func dInt(n int64) decimal.Decimal     { return decimal.NewFromInt(n) }
+func dFloat(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
+
 func TestCreateAndGetHedge(t *testing.T) {
 	s := New()
-	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: 100, Status: domain.StatusExecuted}
+	h := &domain.Hedge{ID: "h1", Currency: "EUR", Notional: dInt(100), Status: domain.StatusExecuted}
 	s.CreateHedge(h)
 
 	got := s.GetHedge("h1")
@@ -31,17 +36,17 @@ func TestGetHedgeReturnsCopy(t *testing.T) {
 	s.CreateHedge(&domain.Hedge{
 		ID:     "h1",
 		Status: domain.StatusPending,
-		Fills:  []domain.Fill{{HedgeID: "h1", Price: 1.0}},
+		Fills:  []domain.Fill{{HedgeID: "h1", Price: dFloat(1.0)}},
 	})
 	got := s.GetHedge("h1")
 	got.Status = domain.StatusFailed
-	got.Fills[0].Price = 9.9
+	got.Fills[0].Price = dFloat(9.9)
 
 	again := s.GetHedge("h1")
 	if again.Status != domain.StatusPending {
 		t.Fatalf("stored status mutated to %q", again.Status)
 	}
-	if again.Fills[0].Price != 1.0 {
+	if !again.Fills[0].Price.Equal(dFloat(1.0)) {
 		t.Fatalf("stored fill mutated to %v", again.Fills[0].Price)
 	}
 }
@@ -174,9 +179,9 @@ func TestHasFillIdempotency(t *testing.T) {
 
 func TestExposureSnapshots(t *testing.T) {
 	s := New()
-	s.AppendExposureSnapshot(&domain.Exposure{Currency: "EUR", NetAmount: 100, UpdatedAt: time.UnixMilli(200)})
-	s.AppendExposureSnapshot(&domain.Exposure{Currency: "JPY", NetAmount: 50, UpdatedAt: time.UnixMilli(100)})
-	s.AppendExposureSnapshot(&domain.Exposure{Currency: "EUR", NetAmount: 200, UpdatedAt: time.UnixMilli(300)})
+	s.AppendExposureSnapshot(&domain.Exposure{Currency: "EUR", NetAmount: dInt(100), UpdatedAt: time.UnixMilli(200)})
+	s.AppendExposureSnapshot(&domain.Exposure{Currency: "JPY", NetAmount: dInt(50), UpdatedAt: time.UnixMilli(100)})
+	s.AppendExposureSnapshot(&domain.Exposure{Currency: "EUR", NetAmount: dInt(200), UpdatedAt: time.UnixMilli(300)})
 	got := s.ExposureSnapshots("EUR")
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
@@ -188,16 +193,16 @@ func TestExposureSnapshots(t *testing.T) {
 
 func TestAllPnL(t *testing.T) {
 	s := New()
-	s.AddPnL(domain.PnL{Currency: "EUR", Total: 100})
-	s.AddPnL(domain.PnL{Currency: "JPY", Total: 50})
+	s.AddPnL(domain.PnL{Currency: "EUR", Total: dInt(100)})
+	s.AddPnL(domain.PnL{Currency: "JPY", Total: dInt(50)})
 	got := s.AllPnL()
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
 	}
 	// returned slice should be a copy
-	got[0].Total = 999
+	got[0].Total = dInt(999)
 	again := s.AllPnL()
-	if again[0].Total != 100 {
+	if !again[0].Total.Equal(dInt(100)) {
 		t.Fatalf("AllPnL should return a copy; got %v", again[0].Total)
 	}
 }
